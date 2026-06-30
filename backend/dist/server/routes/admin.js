@@ -1164,6 +1164,33 @@ export function createAdminRoute(logger) {
         });
         return c.json({ nodes, total: nodes.length });
     });
+    // KB Graph Full Sync — rebuilds graph from all sources (documents + code symbols)
+    app.post('/api/admin/kb/graph/sync', async (c) => {
+        const user = requireAuth(c);
+        if (user instanceof Response)
+            return user;
+        const permCheck = requirePermission(c, user.userId, 'GRAPH_VIEW');
+        if (permCheck instanceof Response)
+            return permCheck;
+        const graphService = globalThis.__sqliteGraphService;
+        if (!graphService) {
+            return c.json({ error: 'Graph service not initialized' }, 503);
+        }
+        // Run sync in the background, respond immediately so the client doesn't time out
+        c.header('Content-Type', 'application/json');
+        setImmediate(async () => {
+            try {
+                // Wipe old data first
+                const db = (await import('../../admin/admin-db.js')).getAdminDb();
+                db.exec('DELETE FROM graph_nodes; DELETE FROM graph_edges;');
+                await graphService.fullSync();
+            }
+            catch (err) {
+                logger.error({ error: err.message }, 'Graph sync failed');
+            }
+        });
+        return c.json({ status: 'sync_started', message: 'Graph sync triggered in background. Check server logs for progress.' });
+    });
     // KB Graph Spatial Query — Neo4j-powered progressive loading based on camera position
     // Falls back to SQLite if Neo4j is unavailable
     app.get('/api/admin/kb/graph/spatial', async (c) => {

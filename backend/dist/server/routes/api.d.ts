@@ -5,4 +5,5 @@
  */
 import { Hono } from 'hono';
 import type { Logger } from 'pino';
-export declare function createApiRoute(logger: Logger): Hono;
+import type { ModuleRegistry } from '../../modules/ModuleRegistry.js';
+export declare function createApiRoute(registry: ModuleRegistry, logger: Logger): Hono;

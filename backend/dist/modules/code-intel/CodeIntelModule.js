@@ -17,6 +17,9 @@ export class CodeIntelModule {
         this.logger = logger.child({ module: this.name });
     }
     get status() { return this._status; }
+    getIndexer() {
+        return this.indexer;
+    }
     async initialize() {
         this.logger.info('Initializing code intelligence module');
         try {

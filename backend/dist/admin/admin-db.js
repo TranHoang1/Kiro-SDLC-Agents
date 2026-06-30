@@ -9,6 +9,13 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { loadConfig, getWorkspacePath } from '../config/BackendConfig.js';
+import { resolveNativeBindingSync } from '../engine/db/native-addon-resolver.js';
+function openDb(dbPath, options) {
+    const nativeBinding = resolveNativeBindingSync();
+    return nativeBinding
+        ? new Database(dbPath, { ...options, nativeBinding })
+        : new Database(dbPath, options);
+}
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const config = loadConfig();
@@ -23,7 +30,7 @@ export function getAdminDb() {
         const dir = path.dirname(DB_PATH);
         if (!fs.existsSync(dir))
             fs.mkdirSync(dir, { recursive: true });
-        db = new Database(DB_PATH);
+        db = openDb(DB_PATH);
         db.pragma('journal_mode = WAL');
         db.pragma('foreign_keys = ON');
         initSchema(db);
@@ -578,7 +585,7 @@ export function searchKbEntries(query) {
         const indexDbPath = getIndexDbPath();
         if (!fs.existsSync(indexDbPath))
             return { items: [], total: 0 };
-        const indexDb = new Database(indexDbPath, { readonly: true });
+        const indexDb = openDb(indexDbPath, { readonly: true });
         // Check for knowledge_entries table (actual table name in index-backend.db)
         const tableExists = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").get();
         if (!tableExists || tableExists.cnt === 0) {
@@ -690,7 +697,7 @@ export function getKbEmbeddings(limit = 100) {
         const indexDbPath = getIndexDbPath();
         if (!fs.existsSync(indexDbPath))
             return { items: [], hasRealData: false };
-        const indexDb = new Database(indexDbPath, { readonly: true });
+        const indexDb = openDb(indexDbPath, { readonly: true });
         // Check knowledge_entries table exists
         const tableExists = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").get();
         if (!tableExists || tableExists.cnt === 0) {
@@ -793,7 +800,7 @@ export function getKbEntryById(entryId) {
         const indexDbPath = getIndexDbPath();
         if (!fs.existsSync(indexDbPath))
             return null;
-        const indexDb = new Database(indexDbPath, { readonly: true });
+        const indexDb = openDb(indexDbPath, { readonly: true });
         const tableExists = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").get();
         if (!tableExists || tableExists.cnt === 0) {
             indexDb.close();
@@ -813,7 +820,7 @@ export function getKbEntryCount() {
         const indexDbPath = getIndexDbPath();
         if (!fs.existsSync(indexDbPath))
             return 0;
-        const indexDb = new Database(indexDbPath, { readonly: true });
+        const indexDb = openDb(indexDbPath, { readonly: true });
         const result = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").get();
         if (!result || result.cnt === 0) {
             indexDb.close();
@@ -832,7 +839,7 @@ export function getKbEntries(page = 1, pageSize = 20, sortBy = 'created_at', sor
         const indexDbPath = getIndexDbPath();
         if (!fs.existsSync(indexDbPath))
             return { items: [], total: 0 };
-        const indexDb = new Database(indexDbPath, { readonly: true });
+        const indexDb = openDb(indexDbPath, { readonly: true });
         // Check if knowledge_entries table exists
         const tableExists = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").get();
         if (!tableExists || tableExists.cnt === 0) {
@@ -870,7 +877,7 @@ export function getAllKbTags() {
         const indexDbPath = getIndexDbPath();
         if (!fs.existsSync(indexDbPath))
             return tagCounts;
-        const indexDb = new Database(indexDbPath, { readonly: true });
+        const indexDb = openDb(indexDbPath, { readonly: true });
         const tableExists = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").get();
         if (tableExists && tableExists.cnt > 0) {
             const rows = indexDb.prepare("SELECT tags, created_at FROM knowledge_entries WHERE tags IS NOT NULL AND tags != ''").all();
@@ -901,7 +908,7 @@ export function updateKbEntryTags(entryId, tags) {
         const indexDbPath = getIndexDbPath();
         if (!fs.existsSync(indexDbPath))
             return;
-        const indexDb = new Database(indexDbPath);
+        const indexDb = openDb(indexDbPath);
         const tableExists = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").get();
         if (tableExists && tableExists.cnt > 0) {
             const tagsStr = tags.join(',');
@@ -919,7 +926,7 @@ export function renameKbTag(oldName, newName) {
         const indexDbPath = getIndexDbPath();
         if (!fs.existsSync(indexDbPath))
             return 0;
-        const indexDb = new Database(indexDbPath);
+        const indexDb = openDb(indexDbPath);
         const tableExists = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").get();
         if (tableExists && tableExists.cnt > 0) {
             const rows = indexDb.prepare('SELECT id, tags FROM knowledge_entries WHERE tags LIKE ?').all(`%${oldName}%`);
@@ -949,7 +956,7 @@ export function deleteKbTag(tagName) {
         const indexDbPath = getIndexDbPath();
         if (!fs.existsSync(indexDbPath))
             return 0;
-        const indexDb = new Database(indexDbPath);
+        const indexDb = openDb(indexDbPath);
         const tableExists = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").get();
         if (tableExists && tableExists.cnt > 0) {
             const rows = indexDb.prepare('SELECT id, tags FROM knowledge_entries WHERE tags LIKE ?').all(`%${tagName}%`);
@@ -979,7 +986,7 @@ export function mergeKbTags(sourceTag, targetTag) {
         const indexDbPath = getIndexDbPath();
         if (!fs.existsSync(indexDbPath))
             return 0;
-        const indexDb = new Database(indexDbPath);
+        const indexDb = openDb(indexDbPath);
         const tableExists = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").get();
         if (tableExists && tableExists.cnt > 0) {
             const rows = indexDb.prepare('SELECT id, tags FROM knowledge_entries WHERE tags LIKE ?').all(`%${sourceTag}%`);
@@ -1012,7 +1019,7 @@ export function getKbEntriesByTag(tagName) {
         const indexDbPath = getIndexDbPath();
         if (!fs.existsSync(indexDbPath))
             return entries;
-        const indexDb = new Database(indexDbPath, { readonly: true });
+        const indexDb = openDb(indexDbPath, { readonly: true });
         const tableExists = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").get();
         if (tableExists && tableExists.cnt > 0) {
             const rows = indexDb.prepare('SELECT * FROM knowledge_entries WHERE tags LIKE ?').all(`%${tagName}%`);

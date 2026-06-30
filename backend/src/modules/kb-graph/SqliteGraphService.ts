@@ -12,6 +12,14 @@ import Database from 'better-sqlite3';
 import type { Logger } from 'pino';
 import { getAdminDb, getKbEntries } from '../../admin/admin-db.js';
 import { getWorkspacePath } from '../../config/BackendConfig.js';
+import { resolveNativeBindingSync } from '../../engine/db/native-addon-resolver.js';
+
+function openDb(dbPath: string, options?: Database.Options): Database.Database {
+  const nativeBinding = resolveNativeBindingSync();
+  return nativeBinding
+    ? new Database(dbPath, { ...options, nativeBinding })
+    : new Database(dbPath, options);
+}
 
 export interface SpatialQueryParams {
   camX: number;
@@ -140,7 +148,7 @@ export class SqliteGraphService {
     const indexDbPath = path.resolve(getWorkspacePath(), '.code-intel', 'index.db');
     if (fs.existsSync(indexDbPath)) {
       try {
-        const indexDb = new Database(indexDbPath, { readonly: true });
+        const indexDb = openDb(indexDbPath, { readonly: true });
 
         // Check tables exist
         const hasTables = indexDb.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name IN ('symbols','files')").get() as any;

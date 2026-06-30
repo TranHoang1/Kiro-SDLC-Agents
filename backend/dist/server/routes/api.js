@@ -4,7 +4,10 @@
  * Implements: UC-5
  */
 import { Hono } from 'hono';
-export function createApiRoute(logger) {
+import * as fs from 'fs';
+import * as path from 'path';
+import { loadConfig } from '../../config/BackendConfig.js';
+export function createApiRoute(registry, logger) {
     const app = new Hono();
     // GET /api/dashboard/summary
     app.get('/api/dashboard/summary', (c) => {
@@ -97,6 +100,81 @@ export function createApiRoute(logger) {
             data: { averageScore: 0, totalEntries: 0, distribution: {} },
             timestamp: new Date().toISOString(),
         });
+    });
+    // POST /api/index/source
+    app.post('/api/index/source', async (c) => {
+        try {
+            const { files } = await c.req.json();
+            if (!files || !Array.isArray(files)) {
+                return c.json({ error: 'files array required' }, 400);
+            }
+            const config = loadConfig();
+            const workspace = config.workspace;
+            // Phase 1: Write all files to disk (critical for remote indexing)
+            let written = 0;
+            for (const file of files) {
+                const targetPath = path.join(workspace, file.path);
+                fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+                fs.writeFileSync(targetPath, file.content, 'utf-8');
+                written++;
+            }
+            // Phase 2: Trigger full re-index asynchronously (non-blocking)
+            // This avoids tree-sitter WASM "table index is out of bounds" crash
+            // that occurs when indexSingleFile is called rapidly per-file.
+            const codeIntelModule = registry.getModule('codeIntel');
+            const indexer = codeIntelModule?.getIndexer();
+            if (indexer) {
+                // Fire-and-forget: run full index in background after all files are written
+                indexer.runFullIndex().catch((err) => {
+                    logger.error({ err }, 'Background full re-index failed');
+                });
+            }
+            return c.json({ written, reindexTriggered: !!indexer });
+        }
+        catch (err) {
+            logger.error({ err }, 'Error writing source batch');
+            return c.json({ error: 'Internal error' }, 500);
+        }
+    });
+    // POST /api/index/document
+    app.post('/api/index/document', async (c) => {
+        try {
+            const { path: relPath, content } = await c.req.json();
+            if (!relPath || !content) {
+                return c.json({ error: 'path and content required' }, 400);
+            }
+            const config = loadConfig();
+            const workspace = config.workspace;
+            const targetPath = path.join(workspace, relPath);
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            fs.writeFileSync(targetPath, content, 'utf-8');
+            return c.json({ success: true });
+        }
+        catch (err) {
+            logger.error({ err }, 'Error writing document');
+            return c.json({ error: 'Internal error' }, 500);
+        }
+    });
+    // POST /api/index/documents
+    app.post('/api/index/documents', async (c) => {
+        try {
+            const { files } = await c.req.json();
+            if (!files || !Array.isArray(files)) {
+                return c.json({ error: 'files array required' }, 400);
+            }
+            const config = loadConfig();
+            const workspace = config.workspace;
+            for (const file of files) {
+                const targetPath = path.join(workspace, file.path);
+                fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+                fs.writeFileSync(targetPath, file.content, 'utf-8');
+            }
+            return c.json({ indexed: files.length });
+        }
+        catch (err) {
+            logger.error({ err }, 'Error writing documents batch');
+            return c.json({ error: 'Internal error' }, 500);
+        }
     });
     return app;
 }

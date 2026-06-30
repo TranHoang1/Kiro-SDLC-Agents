@@ -3,7 +3,7 @@
  *
  * Zero external dependencies — uses the existing admin.db with graph_nodes + graph_edges tables.
  * Provides spatial bounding-box queries for progressive 3D loading.
- * New KB entries auto-get 3D positions computed via Fibonacci sphere layout.
+ * Syncs BOTH knowledge_entries (Documents) AND code symbols from index.db.
  */
 import type { Logger } from 'pino';
 export interface SpatialQueryParams {
@@ -47,6 +47,15 @@ export declare class SqliteGraphService {
     constructor(logger: Logger);
     get ready(): boolean;
     initialize(): void;
+    /**
+     * Full sync: reads documents from knowledge_entries and code from symbols table,
+     * then builds graph_nodes + graph_edges. Safe to call multiple times (REPLACE semantics).
+     */
+    fullSync(): {
+        nodesCreated: number;
+        edgesCreated: number;
+        sources: Record<string, number>;
+    };
     getNodeCount(): number;
     addNode(entryId: string, label: string, type: string, tier: string): GraphNode;
     removeNode(entryId: string): void;
@@ -54,7 +63,7 @@ export declare class SqliteGraphService {
     addEdge(source: string, target: string, weight?: number, relType?: string): void;
     /**
      * Returns ALL node positions (minimal data, no edges) for initial full-load rendering.
-     * Optimized for Points-based visualization of 72k+ nodes.
+     * Optimized for Points-based visualization of 200k+ nodes.
      */
     getAllPositions(): {
         nodes: {
@@ -69,7 +78,13 @@ export declare class SqliteGraphService {
         total: number;
     };
     spatialQuery(params: SpatialQueryParams): SpatialGraphResult;
-    syncFromEntries(entries: any[]): {
+    syncFromEntries(entries: Array<{
+        id: string;
+        label: string;
+        type: string;
+        tier: string;
+        groupId?: number;
+    }>): {
         nodesCreated: number;
         edgesCreated: number;
     };
