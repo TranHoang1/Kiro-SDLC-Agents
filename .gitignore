@@ -43,3 +43,7 @@ kiro-rs/
 .vscode/kiro-pipeline-state/
 mcp-code-intelligence-nodejs/src/http/kiro-ts/
 node_modules
+/backend/node_modules/
+/backend/dist/
+/src/dist/
+/extension/node_modules/
