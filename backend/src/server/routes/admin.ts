@@ -54,6 +54,9 @@ import {
   deleteKbTag,
   mergeKbTags,
   getKbEntriesByTag,
+  getAllMcpCredentials,
+  getMcpCredentials,
+  setMcpCredentials,
 } from '../../admin/admin-db.js';
 import { loadConfig, getWorkspacePath } from '../../config/BackendConfig.js';
 import { getPool } from '../../engine/db/pg-pool.js';
@@ -826,6 +829,57 @@ export function createAdminRoute(logger: Logger): Hono {
     }
 
     return c.json({ serverId, logs: mcpServerLogs[serverId] || [] });
+  });
+
+  // ===== MCP Credentials =====
+
+  app.get('/api/admin/mcp/credentials', async (c) => {
+    const user = await requireAuth(c);
+    if (user instanceof Response) return user;
+
+    const cfg = loadConfig();
+    const orchPath = path.resolve(getWorkspacePath(), cfg.dataDir, cfg.orchestrationConfigPath);
+    const servers: Array<{ name: string; credentialFields: string[] }> = [];
+    if (fs.existsSync(orchPath)) {
+      try {
+        const orch = JSON.parse(fs.readFileSync(orchPath, 'utf-8'));
+        for (const [name, serverCfg] of Object.entries(orch.mcpServers || {})) {
+          const cm = (serverCfg as any).credential_mapping || {};
+          if (Object.keys(cm).length > 0) servers.push({ name, credentialFields: Object.keys(cm) });
+        }
+      } catch { /* ignore */ }
+    }
+
+    const stored = await getAllMcpCredentials(user.userId);
+    const credMap = new Map(stored.map(s => [s.serverName, s.credentials]));
+
+    return c.json({
+      servers: servers.map(s => ({
+        serverName: s.name,
+        credentialFields: s.credentialFields,
+        configured: credMap.has(s.name),
+        credentials: Object.fromEntries(s.credentialFields.map(f => [f, credMap.get(s.name)?.[f] ? '***' : ''])),
+      })),
+    });
+  });
+
+  app.get('/api/admin/mcp/credentials/:serverName', async (c) => {
+    const user = await requireAuth(c);
+    if (user instanceof Response) return user;
+    const serverName = c.req.param('serverName');
+    const creds = await getMcpCredentials(user.userId, serverName);
+    return c.json({ serverName, credentials: creds || {}, configured: !!creds });
+  });
+
+  app.put('/api/admin/mcp/credentials/:serverName', async (c) => {
+    const user = await requireAuth(c);
+    if (user instanceof Response) return user;
+    const serverName = c.req.param('serverName');
+    const { credentials } = await c.req.json();
+    if (!credentials || typeof credentials !== 'object') return c.json({ error: 'credentials object required' }, 400);
+    await setMcpCredentials(user.userId, serverName, credentials);
+    await recordAudit(user.userId, user.username, 'SET_MCP_CREDENTIALS', 'mcp', serverName);
+    return c.json({ success: true, serverName });
   });
 
   // ===== Configuration =====

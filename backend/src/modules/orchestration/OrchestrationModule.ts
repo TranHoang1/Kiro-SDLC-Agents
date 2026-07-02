@@ -11,6 +11,7 @@ import type { ModuleRegistry } from '../ModuleRegistry.js';
 import type { MemoryModule } from '../memory/MemoryModule.js';
 import { McpClientManager } from './McpClientManager.js';
 import { getPool } from '../../engine/db/pg-pool.js';
+import { validateSession, getMcpCredentials } from '../../admin/admin-db.js';
 
 export class OrchestrationModule implements IModule {
   readonly name = 'orchestration';
@@ -94,11 +95,25 @@ export class OrchestrationModule implements IModule {
     handlers.set('execute_dynamic_tool', async (args: any) => {
       const toolName = args.toolName || args.tool_name;
       const toolArgs = args.arguments || {};
-      
+      const sessionToken = args._session_token;
+
+      let userCredentials: Record<string, string> | undefined;
+      if (sessionToken) {
+        try {
+          const session = await validateSession(sessionToken);
+          if (session) {
+            const serverName = this.clientManager.getServerForTool(toolName);
+            if (serverName) {
+              userCredentials = (await getMcpCredentials(session.userId, serverName)) ?? undefined;
+            }
+          }
+        } catch {}
+      }
+
       // If a child MCP server owns this tool, proxy the request
       if (this.clientManager.ownsTool(toolName)) {
         try {
-          const result = await this.clientManager.executeTool(toolName, toolArgs);
+          const result = await this.clientManager.executeTool(toolName, toolArgs, userCredentials);
           return result;
         } catch (err: any) {
           return {

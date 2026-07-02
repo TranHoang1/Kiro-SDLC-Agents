@@ -12,6 +12,7 @@ export class McpClientManager {
   private clients: Map<string, Client> = new Map();
   private toolsToServer: Map<string, string> = new Map();
   private proxiedTools: ToolDefinition[] = [];
+  private credentialMappings: Map<string, Record<string, string>> = new Map();
   private logger: Logger;
 
   constructor(logger: Logger) {
@@ -68,6 +69,9 @@ export class McpClientManager {
           ]);
 
           this.clients.set(serverName, client);
+          if (serverConfig.credential_mapping) {
+            this.credentialMappings.set(serverName, serverConfig.credential_mapping);
+          }
           this.logger.info({ serverName }, 'Connected to child server. Fetching tools...');
 
           // Fetch tools
@@ -105,7 +109,11 @@ export class McpClientManager {
     return this.toolsToServer.has(toolName);
   }
 
-  async executeTool(toolName: string, args: any): Promise<any> {
+  getServerForTool(toolName: string): string | null {
+    return this.toolsToServer.get(toolName) || null;
+  }
+
+  async executeTool(toolName: string, args: any, userCredentials?: Record<string, string>): Promise<any> {
     const serverName = this.toolsToServer.get(toolName);
     if (!serverName) {
       throw new Error(`Tool ${toolName} is not managed by any child server`);
@@ -116,12 +124,24 @@ export class McpClientManager {
       throw new Error(`Client for server ${serverName} is disconnected`);
     }
 
+    let enrichedArgs = { ...args };
+    if (userCredentials) {
+      const mapping = this.credentialMappings.get(serverName);
+      if (mapping) {
+        for (const [clientField, serverField] of Object.entries(mapping)) {
+          if (userCredentials[clientField] !== undefined) {
+            enrichedArgs[serverField] = userCredentials[clientField];
+          }
+        }
+      }
+    }
+
     this.logger.info({ toolName, serverName }, 'Proxying tool execution to child server');
-    
+
     try {
       const result = await client.callTool({
         name: toolName,
-        arguments: args
+        arguments: enrichedArgs
       });
       return {
         content: result.content,
