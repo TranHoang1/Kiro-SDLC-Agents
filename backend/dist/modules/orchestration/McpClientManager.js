@@ -9,6 +9,7 @@ export class McpClientManager {
     clients = new Map();
     toolsToServer = new Map();
     proxiedTools = [];
+    credentialMappings = new Map();
     logger;
     constructor(logger) {
         this.logger = logger.child({ component: 'McpClientManager' });
@@ -60,6 +61,9 @@ export class McpClientManager {
                         new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 10000))
                     ]);
                     this.clients.set(serverName, client);
+                    if (serverConfig.credential_mapping) {
+                        this.credentialMappings.set(serverName, serverConfig.credential_mapping);
+                    }
                     this.logger.info({ serverName }, 'Connected to child server. Fetching tools...');
                     // Fetch tools
                     const toolsResult = await client.listTools();
@@ -92,7 +96,10 @@ export class McpClientManager {
     ownsTool(toolName) {
         return this.toolsToServer.has(toolName);
     }
-    async executeTool(toolName, args) {
+    getServerForTool(toolName) {
+        return this.toolsToServer.get(toolName) || null;
+    }
+    async executeTool(toolName, args, userCredentials) {
         const serverName = this.toolsToServer.get(toolName);
         if (!serverName) {
             throw new Error(`Tool ${toolName} is not managed by any child server`);
@@ -101,11 +108,22 @@ export class McpClientManager {
         if (!client) {
             throw new Error(`Client for server ${serverName} is disconnected`);
         }
+        let enrichedArgs = { ...args };
+        if (userCredentials) {
+            const mapping = this.credentialMappings.get(serverName);
+            if (mapping) {
+                for (const [clientField, serverField] of Object.entries(mapping)) {
+                    if (userCredentials[clientField] !== undefined) {
+                        enrichedArgs[serverField] = userCredentials[clientField];
+                    }
+                }
+            }
+        }
         this.logger.info({ toolName, serverName }, 'Proxying tool execution to child server');
         try {
             const result = await client.callTool({
                 name: toolName,
-                arguments: args
+                arguments: enrichedArgs
             });
             return {
                 content: result.content,

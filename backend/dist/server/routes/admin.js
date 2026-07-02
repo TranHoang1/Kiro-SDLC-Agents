@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { initAdminDb, verifyPassword, createSession, validateSession, invalidateSession, invalidateUserSessions, refreshSession, getUsers, getUserById, getUserByUsername, createUser, updateUserStatus, deleteUser, resetUserPassword, changePassword, updateLastLogin, getGroups, getGroupById, createGroup, updateGroup, deleteGroup, getUserPermissions, getUserSessions, recordAudit, getAuditLogs, recordConfigChange, getConfigChanges, getKbEntryCount, getKbEntries, getRecentActivity, recordQueryLog, getQueryLogs, getQueryLogStats, setPromotionCooldown, checkPromotionCooldown, searchKbEntries, getKbEmbeddings, getKbEntryById, getAllKbTags, updateKbEntryTags, renameKbTag, deleteKbTag, mergeKbTags, getKbEntriesByTag, } from '../../admin/admin-db.js';
+import { initAdminDb, verifyPassword, createSession, validateSession, invalidateSession, invalidateUserSessions, refreshSession, getUsers, getUserById, getUserByUsername, createUser, updateUserStatus, deleteUser, resetUserPassword, changePassword, updateLastLogin, getGroups, getGroupById, createGroup, updateGroup, deleteGroup, getUserPermissions, getUserSessions, recordAudit, getAuditLogs, recordConfigChange, getConfigChanges, getKbEntryCount, getKbEntries, getRecentActivity, recordQueryLog, getQueryLogs, getQueryLogStats, setPromotionCooldown, checkPromotionCooldown, searchKbEntries, getKbEmbeddings, getKbEntryById, getAllKbTags, updateKbEntryTags, renameKbTag, deleteKbTag, mergeKbTags, getKbEntriesByTag, getAllMcpCredentials, getMcpCredentials, setMcpCredentials, } from '../../admin/admin-db.js';
 import { loadConfig, getWorkspacePath } from '../../config/BackendConfig.js';
 import { getPool } from '../../engine/db/pg-pool.js';
 const __filename = fileURLToPath(import.meta.url);
@@ -729,6 +729,56 @@ export function createAdminRoute(logger) {
         }
         return c.json({ serverId, logs: mcpServerLogs[serverId] || [] });
     });
+    // ===== MCP Credentials =====
+    app.get('/api/admin/mcp/credentials', async (c) => {
+        const user = await requireAuth(c);
+        if (user instanceof Response)
+            return user;
+        const cfg = loadConfig();
+        const orchPath = path.resolve(getWorkspacePath(), cfg.dataDir, cfg.orchestrationConfigPath);
+        const servers = [];
+        if (fs.existsSync(orchPath)) {
+            try {
+                const orch = JSON.parse(fs.readFileSync(orchPath, 'utf-8'));
+                for (const [name, serverCfg] of Object.entries(orch.mcpServers || {})) {
+                    const cm = serverCfg.credential_mapping || {};
+                    if (Object.keys(cm).length > 0)
+                        servers.push({ name, credentialFields: Object.keys(cm) });
+                }
+            }
+            catch { /* ignore */ }
+        }
+        const stored = await getAllMcpCredentials(user.userId);
+        const credMap = new Map(stored.map(s => [s.serverName, s.credentials]));
+        return c.json({
+            servers: servers.map(s => ({
+                serverName: s.name,
+                credentialFields: s.credentialFields,
+                configured: credMap.has(s.name),
+                credentials: Object.fromEntries(s.credentialFields.map(f => [f, credMap.get(s.name)?.[f] ? '***' : ''])),
+            })),
+        });
+    });
+    app.get('/api/admin/mcp/credentials/:serverName', async (c) => {
+        const user = await requireAuth(c);
+        if (user instanceof Response)
+            return user;
+        const serverName = c.req.param('serverName');
+        const creds = await getMcpCredentials(user.userId, serverName);
+        return c.json({ serverName, credentials: creds || {}, configured: !!creds });
+    });
+    app.put('/api/admin/mcp/credentials/:serverName', async (c) => {
+        const user = await requireAuth(c);
+        if (user instanceof Response)
+            return user;
+        const serverName = c.req.param('serverName');
+        const { credentials } = await c.req.json();
+        if (!credentials || typeof credentials !== 'object')
+            return c.json({ error: 'credentials object required' }, 400);
+        await setMcpCredentials(user.userId, serverName, credentials);
+        await recordAudit(user.userId, user.username, 'SET_MCP_CREDENTIALS', 'mcp', serverName);
+        return c.json({ success: true, serverName });
+    });
     // ===== Configuration =====
     // In-memory config overrides (persisted via config_changes table, applied on restart for restart-required keys)
     const configOverrides = {};
@@ -1125,12 +1175,13 @@ export function createAdminRoute(logger) {
         if (graphService && graphService.ready) {
             try {
                 const result = graphService.getAllPositions();
-                // Filter by allowed tiers
-                if (Array.isArray(allowedTiers)) {
-                    result.nodes = result.nodes.filter((n) => allowedTiers.includes(n.tier));
-                    result.total = result.nodes.length;
+                if (result.nodes && result.nodes.length > 0) {
+                    if (Array.isArray(allowedTiers)) {
+                        result.nodes = result.nodes.filter((n) => allowedTiers.includes(n.tier));
+                        result.total = result.nodes.length;
+                    }
+                    return c.json(result);
                 }
-                return c.json(result);
             }
             catch (err) {
                 logger.warn({ error: err.message }, 'getAllPositions failed');

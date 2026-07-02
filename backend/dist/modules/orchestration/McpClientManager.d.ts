@@ -4,11 +4,13 @@ export declare class McpClientManager {
     private clients;
     private toolsToServer;
     private proxiedTools;
+    private credentialMappings;
     private logger;
     constructor(logger: Logger);
     initializeAll(): Promise<void>;
     getProxiedTools(): ToolDefinition[];
     ownsTool(toolName: string): boolean;
-    executeTool(toolName: string, args: any): Promise<any>;
+    getServerForTool(toolName: string): string | null;
+    executeTool(toolName: string, args: any, userCredentials?: Record<string, string>): Promise<any>;
     shutdownAll(): Promise<void>;
 }

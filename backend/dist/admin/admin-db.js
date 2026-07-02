@@ -112,6 +112,17 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_source_target ON graph_edges(source, 
 CREATE INDEX IF NOT EXISTS idx_query_logs_timestamp ON query_logs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_query_logs_user_id ON query_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_promo_cooldown_entry ON promotion_cooldowns(entry_id);
+
+CREATE TABLE IF NOT EXISTS mcp_credentials (
+  id SERIAL PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  server_name TEXT NOT NULL,
+  credentials TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+  FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  UNIQUE(user_id, server_name)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_credentials_user ON mcp_credentials(user_id);
 `;
 let _adminInitialized = false;
 export async function initAdminDb() {
@@ -750,5 +761,30 @@ export async function getKbEntriesByTag(tagName) {
         console.error('Error in getKbEntriesByTag:', e);
     }
     return entries;
+}
+// --- MCP Credentials ---
+export async function getMcpCredentials(userId, serverName) {
+    try {
+        const row = (await getPool().query('SELECT credentials FROM mcp_credentials WHERE user_id = $1 AND server_name = $2', [userId, serverName])).rows[0];
+        return row ? JSON.parse(row.credentials) : null;
+    }
+    catch {
+        return null;
+    }
+}
+export async function setMcpCredentials(userId, serverName, credentials) {
+    const now = new Date().toISOString();
+    await getPool().query(`INSERT INTO mcp_credentials (user_id, server_name, credentials, updated_at)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (user_id, server_name) DO UPDATE SET credentials = EXCLUDED.credentials, updated_at = EXCLUDED.updated_at`, [userId, serverName, JSON.stringify(credentials), now]);
+}
+export async function getAllMcpCredentials(userId) {
+    try {
+        const rows = (await getPool().query('SELECT server_name, credentials FROM mcp_credentials WHERE user_id = $1', [userId])).rows;
+        return rows.map(r => ({ serverName: r.server_name, credentials: JSON.parse(r.credentials) }));
+    }
+    catch {
+        return [];
+    }
 }
 //# sourceMappingURL=admin-db.js.map

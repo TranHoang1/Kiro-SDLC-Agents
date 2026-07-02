@@ -134,15 +134,6 @@ export function createAdminRoute(logger: Logger): Hono {
     return c.text('Not found', 404);
   });
 
-  app.get('/admin/mcp-credentials', async (c) => {
-    const credPath = path.resolve(__dirname, '../../admin-ui/dist/mcp-credentials.html');
-    if (fs.existsSync(credPath)) {
-      return new Response(fs.readFileSync(credPath, 'utf-8'), {
-        headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache' }
-      });
-    }
-    return c.text('Not found', 404);
-  });
 
   app.get('/admin/*', async (c) => {
     if (fs.existsSync(spaPath)) {
@@ -1344,12 +1335,13 @@ export function createAdminRoute(logger: Logger): Hono {
     if (graphService && graphService.ready) {
       try {
         const result = graphService.getAllPositions();
-        // Filter by allowed tiers
-        if (Array.isArray(allowedTiers)) {
-          result.nodes = result.nodes.filter((n: any) => allowedTiers.includes(n.tier));
-          result.total = result.nodes.length;
+        if (result.nodes && result.nodes.length > 0) {
+          if (Array.isArray(allowedTiers)) {
+            result.nodes = result.nodes.filter((n: any) => allowedTiers.includes(n.tier));
+            result.total = result.nodes.length;
+          }
+          return c.json(result);
         }
-        return c.json(result);
       } catch (err: any) {
         logger.warn({ error: err.message }, 'getAllPositions failed');
       }

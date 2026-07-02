@@ -14,6 +14,7 @@ import { EmbeddingService } from './engine/parsers/embedding/EmbeddingService.js
 import { KBGraphModule } from './modules/kb-graph/KBGraphModule.js';
 import { UtilityModule } from './modules/utility/UtilityModule.js';
 import { initAdminDb } from './admin/admin-db.js';
+import { getPool } from './engine/db/pg-pool.js';
 const VERSION = '1.0.0';
 async function main() {
     const config = loadConfig();
@@ -39,38 +40,33 @@ async function main() {
     // Initialize all modules in parallel
     await registry.initializeAll();
     // Ingest all registered tools into the dedicated mcp_tools table for dynamic search (find_tools)
-    const memoryModule = registry.getModule('memory');
-    if (memoryModule && memoryModule.status === 'ready') {
-        const memEngine = memoryModule.getEngine();
-        const db = memEngine.getDb();
+    {
+        const pool = getPool();
         const allTools = registry.getAllToolDefinitions();
         let ingestedCount = 0;
+        let updatedCount = 0;
         const embeddingService = EmbeddingService.getInstance();
-        // Prepare tools with embeddings asynchronously
-        const preparedTools = [];
         for (const tool of allTools) {
-            const text = `Tool: ${tool.name}\nDescription: ${tool.description}`;
-            const vector = await embeddingService.generateEmbedding(text);
-            const vectorBuffer = Buffer.from(new Float32Array(vector).buffer);
-            preparedTools.push({ tool, vectorBuffer });
-        }
-        // Use transaction for faster ingestion
-        const ingestTools = db.transaction((items) => {
-            for (const item of items) {
-                const tool = item.tool;
-                const existing = db.prepare('SELECT id FROM mcp_tools WHERE name = ?').get(tool.name);
+            try {
+                const text = `Tool: ${tool.name}\nDescription: ${tool.description}`;
+                const vector = await embeddingService.generateEmbedding(text);
+                const vectorBuffer = Buffer.from(new Float32Array(vector).buffer);
                 const schemaJson = JSON.stringify(tool.inputSchema || {});
-                if (!existing) {
-                    db.prepare('INSERT INTO mcp_tools (name, description, schema_json, category, vector) VALUES (?, ?, ?, ?, ?)').run(tool.name, tool.description, schemaJson, tool.category || 'general', item.vectorBuffer);
+                const existing = await pool.query('SELECT id FROM mcp_tools WHERE name = $1', [tool.name]);
+                if (existing.rows.length === 0) {
+                    await pool.query('INSERT INTO mcp_tools (name, description, schema_json, category, vector) VALUES ($1, $2, $3, $4, $5)', [tool.name, tool.description, schemaJson, tool.category || 'general', vectorBuffer]);
                     ingestedCount++;
                 }
                 else {
-                    db.prepare('UPDATE mcp_tools SET description = ?, schema_json = ?, category = ?, vector = ? WHERE id = ?').run(tool.description, schemaJson, tool.category || 'general', item.vectorBuffer, existing.id);
+                    await pool.query('UPDATE mcp_tools SET description = $1, schema_json = $2, category = $3, vector = $4 WHERE id = $5', [tool.description, schemaJson, tool.category || 'general', vectorBuffer, existing.rows[0].id]);
+                    updatedCount++;
                 }
             }
-        });
-        ingestTools(preparedTools);
-        logger.info({ ingestedTools: ingestedCount, totalTools: allTools.length }, 'Ingested dynamic tools with vector embeddings');
+            catch (e) {
+                logger.warn({ tool: tool.name, err: e?.message }, 'Failed to ingest tool');
+            }
+        }
+        logger.info({ insertedTools: ingestedCount, updatedTools: updatedCount, totalTools: allTools.length }, 'Ingested dynamic tools with vector embeddings');
     }
     logger.info({ readyModules: registry.getReadyCount(), totalModules: registry.getTotalCount() }, 'Modules initialized');
     // Start HTTP server

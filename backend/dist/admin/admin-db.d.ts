@@ -113,3 +113,9 @@ export declare function renameKbTag(oldName: string, newName: string): Promise<n
 export declare function deleteKbTag(tagName: string): Promise<number>;
 export declare function mergeKbTags(sourceTag: string, targetTag: string): Promise<number>;
 export declare function getKbEntriesByTag(tagName: string): Promise<any[]>;
+export declare function getMcpCredentials(userId: string, serverName: string): Promise<Record<string, string> | null>;
+export declare function setMcpCredentials(userId: string, serverName: string, credentials: Record<string, string>): Promise<void>;
+export declare function getAllMcpCredentials(userId: string): Promise<{
+    serverName: string;
+    credentials: Record<string, string>;
+}[]>;
