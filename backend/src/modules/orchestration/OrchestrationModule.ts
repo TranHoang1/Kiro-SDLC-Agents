@@ -10,6 +10,7 @@ import type { Logger } from 'pino';
 import type { ModuleRegistry } from '../ModuleRegistry.js';
 import type { MemoryModule } from '../memory/MemoryModule.js';
 import { McpClientManager } from './McpClientManager.js';
+import { getPool } from '../../engine/db/pg-pool.js';
 
 export class OrchestrationModule implements IModule {
   readonly name = 'orchestration';
@@ -52,13 +53,11 @@ export class OrchestrationModule implements IModule {
       let tools: any[] = [];
       if (this.registry) {
         const memoryModule = this.registry.getModule('memory') as MemoryModule | undefined;
-        if (memoryModule && memoryModule.status === 'ready') {
-          const db = memoryModule.getEngine().getDb();
-          
+        if (memoryModule) {
           try {
             const queryVector = await EmbeddingService.getInstance().generateEmbedding(query);
-            
-            const rows = db.prepare(`SELECT * FROM mcp_tools`).all() as any[];
+
+            const rows = (await getPool().query('SELECT * FROM mcp_tools')).rows as any[];
             
             const scoredTools = rows.map(r => {
               let score = 0;
