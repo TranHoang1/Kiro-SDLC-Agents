@@ -53,10 +53,10 @@ export interface IndexStatus {
 }
 
 export class QueryLayer {
-  private db: Database.Database;
+  private db: any;
 
   constructor(dbManager: DatabaseManager) {
-    this.db = dbManager.getDb();
+    this.db = dbManager.getSqliteDb();
   }
 
   /** Full-text search across symbols using FTS5. */

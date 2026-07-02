@@ -86,29 +86,29 @@ export async function dispatchCodeIntelTool(
     case 'code_kb_export': return handleCodeKbExport(args, queryLayer, workspace);
     case 'drawio_auto_layout': return handleDrawioLayout(args, workspace);
     case 'drawio_export_png': return handleDrawioExportPng(args, workspace, null as any);
-    case 'code_callers': return handleCodeCallers(args, dbManager.getDb());
-    case 'code_callees': return handleCodeCallees(args, dbManager.getDb());
-    case 'code_dependencies': return handleCodeDependencies(args, dbManager.getDb(), workspace);
-    case 'code_impact': return handleCodeImpact(args, dbManager.getDb(), workspace);
-    case 'code_traverse': return handleCodeTraverse(args, dbManager.getDb(), workspace);
-    case 'complexity_analysis': return handleComplexityTool(args, dbManager.getDb());
-    case 'find_entry_points': return handleEntryPointTool(args, dbManager.getDb());
+    case 'code_callers': return handleCodeCallers(args, dbManager.getDb() as any);
+    case 'code_callees': return handleCodeCallees(args, dbManager.getDb() as any);
+    case 'code_dependencies': return handleCodeDependencies(args, dbManager.getDb() as any, workspace);
+    case 'code_impact': return handleCodeImpact(args, dbManager.getDb() as any, workspace);
+    case 'code_traverse': return handleCodeTraverse(args, dbManager.getDb() as any, workspace);
+    case 'complexity_analysis': return handleComplexityTool(args, dbManager.getDb() as any);
+    case 'find_entry_points': return handleEntryPointTool(args, dbManager.getDb() as any);
     case 'find_circular_deps':
     case 'find_related_tests':
     case 'find_hot_paths':
     case 'find_dead_imports':
     case 'module_summary': {
-      const result = handleGraphAnalysisTool(name, args, dbManager.getDb());
+      const result = handleGraphAnalysisTool(name, args, dbManager.getDb() as any);
       return result ?? `Unknown tool: ${name}`;
     }
-    case 'get_ai_context': return handleGetAIContext(args, dbManager.getDb(), workspace);
-    case 'get_edit_context': return handleGetEditContext(args, dbManager.getDb(), workspace);
-    case 'get_curated_context': return handleGetCuratedContext(args, dbManager.getDb(), workspace, dbManager);
+    case 'get_ai_context': return handleGetAIContext(args, dbManager.getDb() as any, workspace);
+    case 'get_edit_context': return handleGetEditContext(args, dbManager.getDb() as any, workspace);
+    case 'get_curated_context': return handleGetCuratedContext(args, dbManager.getDb() as any, workspace, dbManager);
     case 'find_duplicates':
     case 'find_dead_code':
     case 'git_search':
     case 'git_index': {
-      const simResult = handleSimilarityTool(name, args, dbManager.getDb(), workspace);
+      const simResult = handleSimilarityTool(name, args, dbManager.getDb() as any, workspace);
       return simResult ?? `Unknown tool: ${name}`;
     }
     default:

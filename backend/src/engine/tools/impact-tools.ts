@@ -29,7 +29,7 @@ export const IMPACT_TOOL_DEFINITIONS = [
   },
 ];
 
-export function handleCodeImpact(args: Record<string, unknown>, db: Database.Database, workspace: string): string {
+export async function handleCodeImpact(args: Record<string, unknown>, db: any, workspace: string): Promise<string> {
   const symbol = args.symbol as string;
   if (!symbol) return JSON.stringify({ error: 'Parameter "symbol" is required' });
 
@@ -38,7 +38,7 @@ export function handleCodeImpact(args: Record<string, unknown>, db: Database.Dat
   const includeTests = (args.include_tests as boolean) ?? true;
   const severityThreshold = (args.severity_threshold as Severity) ?? 'low';
 
-  const graphRepo = new GraphRepository(db);
+  const graphRepo = new GraphRepository(db as any);
   const resolver = new SymbolResolver(db);
   const callGraph = new CallGraphService(graphRepo, resolver);
   const fileResolver = new FileResolver(db, workspace);
@@ -46,7 +46,7 @@ export function handleCodeImpact(args: Record<string, unknown>, db: Database.Dat
   const testDetector = new TestDetector(db);
 
   const service = new ImpactAnalysisService(db, callGraph, depGraph, resolver, testDetector);
-  const result = service.analyzeImpact(symbol, action, depth, includeTests, severityThreshold);
+  const result = await service.analyzeImpact(symbol, action, depth, includeTests, severityThreshold);
 
   return formatImpactResult(result);
 }

@@ -40,13 +40,13 @@ export class CallGraphService {
   }
 
   /** Find all callers of a symbol with transitive depth. */
-  findCallers(
+  async findCallers(
     symbolName: string,
     depth: number = 1,
     limit: number = 20,
     fileFilter?: string,
     kindFilter: string | string[] = 'calls'
-  ): CallGraphResponse {
+  ): Promise<CallGraphResponse> {
     const startTime = Date.now();
     const clampedDepth = Math.min(Math.max(depth, 1), 5);
 
@@ -72,7 +72,7 @@ export class CallGraphService {
 
       // Query for each kind
       for (const kind of kinds) {
-        const callers = this.graphRepo.findCallers(current, kind, limit - results.length);
+        const callers = await this.graphRepo.findCallers(current, kind, limit - results.length);
 
         for (const caller of callers) {
           if (visited.has(caller.id)) continue;
@@ -115,14 +115,14 @@ export class CallGraphService {
   }
 
   /** Find all callees of a symbol with transitive depth. */
-  findCallees(
+  async findCallees(
     symbolName: string,
     depth: number = 1,
     limit: number = 20,
     fileFilter?: string,
     includeExternal: boolean = true,
     kindFilter: string | string[] = 'calls'
-  ): CallGraphResponse {
+  ): Promise<CallGraphResponse> {
     const startTime = Date.now();
     const clampedDepth = Math.min(Math.max(depth, 1), 5);
 
@@ -147,7 +147,7 @@ export class CallGraphService {
       if (currentDepth >= clampedDepth) continue;
 
       for (const kind of kinds) {
-        const callees = this.graphRepo.findCallees(symbolId, kind, limit - results.length);
+        const callees = await this.graphRepo.findCallees(symbolId, kind, limit - results.length);
 
         for (const callee of callees) {
           const key = `${callee.name}:${callee.call_line}`;

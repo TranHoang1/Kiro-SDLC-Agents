@@ -5,7 +5,7 @@
 export class QueryLayer {
     db;
     constructor(dbManager) {
-        this.db = dbManager.getDb();
+        this.db = dbManager.getSqliteDb();
     }
     /** Full-text search across symbols using FTS5. */
     searchCode(query, limit = 20) {

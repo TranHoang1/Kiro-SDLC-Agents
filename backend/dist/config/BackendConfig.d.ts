@@ -6,6 +6,7 @@ declare const BackendConfigSchema: z.ZodObject<{
     dataDir: z.ZodDefault<z.ZodString>;
     onnxModelPath: z.ZodDefault<z.ZodString>;
     sqliteDbPath: z.ZodDefault<z.ZodString>;
+    databaseUrl: z.ZodDefault<z.ZodString>;
     orchestrationConfigPath: z.ZodDefault<z.ZodString>;
     logLevel: z.ZodDefault<z.ZodEnum<["debug", "info", "warn", "error"]>>;
 }, "strip", z.ZodTypeAny, {
@@ -14,6 +15,7 @@ declare const BackendConfigSchema: z.ZodObject<{
     dataDir: string;
     onnxModelPath: string;
     sqliteDbPath: string;
+    databaseUrl: string;
     orchestrationConfigPath: string;
     logLevel: "debug" | "info" | "warn" | "error";
 }, {
@@ -22,6 +24,7 @@ declare const BackendConfigSchema: z.ZodObject<{
     dataDir?: string | undefined;
     onnxModelPath?: string | undefined;
     sqliteDbPath?: string | undefined;
+    databaseUrl?: string | undefined;
     orchestrationConfigPath?: string | undefined;
     logLevel?: "debug" | "info" | "warn" | "error" | undefined;
 }>;

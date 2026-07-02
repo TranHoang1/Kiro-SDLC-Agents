@@ -36,9 +36,9 @@ export declare class CallGraphService {
     private symbolResolver;
     constructor(graphRepo: GraphRepository, symbolResolver: SymbolResolver);
     /** Find all callers of a symbol with transitive depth. */
-    findCallers(symbolName: string, depth?: number, limit?: number, fileFilter?: string, kindFilter?: string | string[]): CallGraphResponse;
+    findCallers(symbolName: string, depth?: number, limit?: number, fileFilter?: string, kindFilter?: string | string[]): Promise<CallGraphResponse>;
     /** Find all callees of a symbol with transitive depth. */
-    findCallees(symbolName: string, depth?: number, limit?: number, fileFilter?: string, includeExternal?: boolean, kindFilter?: string | string[]): CallGraphResponse;
+    findCallees(symbolName: string, depth?: number, limit?: number, fileFilter?: string, includeExternal?: boolean, kindFilter?: string | string[]): Promise<CallGraphResponse>;
     private symbolNotFoundResponse;
     private matchFilter;
 }

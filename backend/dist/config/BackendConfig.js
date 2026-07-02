@@ -18,6 +18,7 @@ const BackendConfigSchema = z.object({
     dataDir: z.string().default('.code-intel'),
     onnxModelPath: z.string().default('models/model.onnx'),
     sqliteDbPath: z.string().default('index.db'),
+    databaseUrl: z.string().default('postgresql://localhost:5432/code_intel'),
     orchestrationConfigPath: z.string().default('orchestration.json'),
     logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });

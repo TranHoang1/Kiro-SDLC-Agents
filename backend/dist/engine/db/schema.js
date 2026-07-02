@@ -1,31 +1,24 @@
-/**
- * DDL constants for SQLite schema — files, symbols, modules, embeddings.
- * Uses FTS5 with porter tokenizer for full-text search on symbols.
- */
 import { MEMORY_SCHEMA } from '../../modules/memory/schema.js';
 export const SCHEMA_V1 = `
--- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER PRIMARY KEY,
-  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+  applied_at TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
 );
 
--- Indexed files with content hash for incremental updates
 CREATE TABLE IF NOT EXISTS files (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   path TEXT NOT NULL UNIQUE,
   relative_path TEXT NOT NULL,
   language TEXT NOT NULL,
   module TEXT,
   content_hash TEXT NOT NULL,
   size_bytes INTEGER NOT NULL,
-  last_indexed TEXT NOT NULL DEFAULT (datetime('now')),
+  last_indexed TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
   line_count INTEGER NOT NULL DEFAULT 0
 );
 
--- Extracted symbols (functions, classes, interfaces, etc.)
 CREATE TABLE IF NOT EXISTS symbols (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   file_id INTEGER NOT NULL,
   name TEXT NOT NULL,
   kind TEXT NOT NULL,
@@ -35,41 +28,30 @@ CREATE TABLE IF NOT EXISTS symbols (
   parent_symbol TEXT,
   visibility TEXT,
   doc_comment TEXT,
+  search_vector TSVECTOR,
   FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
 );
 
--- FTS5 virtual table for full-text search on symbols
-CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
-  name,
-  signature,
-  doc_comment,
-  kind,
-  content=symbols,
-  content_rowid=id,
-  tokenize='porter unicode61'
-);
+CREATE INDEX IF NOT EXISTS idx_symbols_search ON symbols USING GIN(search_vector);
 
--- Triggers to keep FTS in sync
-CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
-  INSERT INTO symbols_fts(rowid, name, signature, doc_comment, kind)
-  VALUES (new.id, new.name, new.signature, new.doc_comment, new.kind);
-END;
+CREATE OR REPLACE FUNCTION symbols_search_update() RETURNS trigger AS $$
+BEGIN
+  NEW.search_vector := to_tsvector('english',
+    coalesce(NEW.name, '') || ' ' ||
+    coalesce(NEW.signature, '') || ' ' ||
+    coalesce(NEW.doc_comment, '') || ' ' ||
+    coalesce(NEW.kind, ''));
+  RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
 
-CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
-  INSERT INTO symbols_fts(symbols_fts, rowid, name, signature, doc_comment, kind)
-  VALUES ('delete', old.id, old.name, old.signature, old.doc_comment, old.kind);
-END;
+DROP TRIGGER IF EXISTS symbols_search_trigger ON symbols;
+CREATE TRIGGER symbols_search_trigger
+  BEFORE INSERT OR UPDATE ON symbols
+  FOR EACH ROW EXECUTE FUNCTION symbols_search_update();
 
-CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
-  INSERT INTO symbols_fts(symbols_fts, rowid, name, signature, doc_comment, kind)
-  VALUES ('delete', old.id, old.name, old.signature, old.doc_comment, old.kind);
-  INSERT INTO symbols_fts(rowid, name, signature, doc_comment, kind)
-  VALUES (new.id, new.name, new.signature, new.doc_comment, new.kind);
-END;
-
--- Module groupings with pattern metadata
 CREATE TABLE IF NOT EXISTS modules (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   root_path TEXT NOT NULL,
   language TEXT,
@@ -84,19 +66,17 @@ CREATE TABLE IF NOT EXISTS modules (
   purpose TEXT DEFAULT NULL
 );
 
--- Optional embeddings for semantic search
 CREATE TABLE IF NOT EXISTS embeddings (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   symbol_id INTEGER,
   file_id INTEGER,
-  vector BLOB NOT NULL,
+  vector BYTEA NOT NULL,
   model TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
   FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
   FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
 );
 
--- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(relative_path);
 CREATE INDEX IF NOT EXISTS idx_files_module ON files(module);
 CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
@@ -106,17 +86,15 @@ CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
 CREATE INDEX IF NOT EXISTS idx_embeddings_symbol ON embeddings(symbol_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_file ON embeddings(file_id);
 
--- MCP Tools
 CREATE TABLE IF NOT EXISTS mcp_tools (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   description TEXT NOT NULL,
   schema_json TEXT NOT NULL,
   category TEXT,
-  vector BLOB
+  vector BYTEA
 );
 
--- MEMORY TABLES
 ${MEMORY_SCHEMA}
 `;
 //# sourceMappingURL=schema.js.map

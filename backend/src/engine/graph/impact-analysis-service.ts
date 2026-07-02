@@ -63,13 +63,13 @@ export class ImpactAnalysisService {
   }
 
   /** Analyze the impact of modifying/deleting/renaming a symbol. */
-  analyzeImpact(
+  async analyzeImpact(
     symbolName: string,
     action: ImpactAction = 'modify',
     depth: number = 3,
     includeTests: boolean = true,
     severityThreshold: Severity = 'low'
-  ): ImpactResult {
+  ): Promise<ImpactResult> {
     const startTime = Date.now();
     const clampedDepth = Math.min(Math.max(depth, 1), 5);
 
@@ -83,7 +83,7 @@ export class ImpactAnalysisService {
     const sourceFile = resolved[0].filePath;
 
     // 2. Find callers via call graph
-    const callerResult = this.callGraph.findCallers(symbolName, clampedDepth, 100);
+    const callerResult = await this.callGraph.findCallers(symbolName, clampedDepth, 100);
     for (const caller of callerResult.results) {
       const severity = this.classifySeverity(caller.depthLevel, action, 'caller');
       impacts.push({

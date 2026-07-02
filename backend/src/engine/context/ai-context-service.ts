@@ -61,7 +61,7 @@ export class AIContextService {
         continue;
       }
 
-      const content = this.fetchSection(section, targetSymbol, caller_depth);
+      const content = await this.fetchSection(section, targetSymbol, caller_depth);
       if (content == null) {
         continue; // Section not available
       }
@@ -100,15 +100,15 @@ export class AIContextService {
     };
   }
 
-  private fetchSection(section: SectionDef, symbol: ResolvedSymbol, callerDepth: number): any {
+  private async fetchSection(section: SectionDef, symbol: ResolvedSymbol, callerDepth: number): Promise<any> {
     try {
       switch (section.name) {
         case 'source':
           return this.fetchSource(symbol);
         case 'callers':
-          return this.fetchCallers(symbol, callerDepth, section.format);
+          return await this.fetchCallers(symbol, callerDepth, section.format);
         case 'callees':
-          return this.fetchCallees(symbol, callerDepth);
+          return await this.fetchCallees(symbol, callerDepth);
         case 'siblings':
           return this.fetchSiblings(symbol);
         case 'imports':
@@ -126,7 +126,7 @@ export class AIContextService {
         case 'test_patterns':
           return this.fetchTestPatterns(symbol);
         case 'mocks_needed':
-          return this.fetchMocksNeeded(symbol);
+          return await this.fetchMocksNeeded(symbol);
         default:
           return null;
       }
@@ -149,8 +149,8 @@ export class AIContextService {
     }
   }
 
-  private fetchCallers(symbol: ResolvedSymbol, depth: number, format: string): any {
-    const result = this.callGraph.findCallers(symbol.name, depth, 10);
+  private async fetchCallers(symbol: ResolvedSymbol, depth: number, format: string): Promise<any> {
+    const result = await this.callGraph.findCallers(symbol.name, depth, 10);
     if (result.results.length === 0) return null;
 
     if (format === 'summary') {
@@ -164,8 +164,8 @@ export class AIContextService {
     }));
   }
 
-  private fetchCallees(symbol: ResolvedSymbol, depth: number): any {
-    const result = this.callGraph.findCallees(symbol.name, depth, 10);
+  private async fetchCallees(symbol: ResolvedSymbol, depth: number): Promise<any> {
+    const result = await this.callGraph.findCallees(symbol.name, depth, 10);
     if (result.results.length === 0) return null;
     return result.results.map(r => ({
       symbol: r.symbol,
@@ -266,8 +266,8 @@ export class AIContextService {
     return rows.map(r => r.name);
   }
 
-  private fetchMocksNeeded(symbol: ResolvedSymbol): any {
-    const result = this.callGraph.findCallees(symbol.name, 1, 20);
+  private async fetchMocksNeeded(symbol: ResolvedSymbol): Promise<any> {
+    const result = await this.callGraph.findCallees(symbol.name, 1, 20);
     if (result.results.length === 0) return null;
 
     const externalDeps = result.results

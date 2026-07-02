@@ -1,8 +1,4 @@
-/**
- * KSA-153: Graph Repository — CRUD operations for the code relationship graph.
- * Provides prepared-statement-based access to the relationships table.
- */
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
 export interface CallerResult {
     name: string;
     kind: string;
@@ -31,25 +27,16 @@ export interface RelationshipInput {
     metadata?: Record<string, unknown> | null;
 }
 export declare class GraphRepository {
-    private db;
-    private stmts;
-    constructor(db: Database.Database);
-    /** Insert a batch of relationships within a transaction. */
-    insertRelationships(relationships: RelationshipInput[]): void;
-    /** Delete all relationships originating from a file. */
-    deleteFileRelationships(filePath: string): void;
-    /** Find direct callers of a symbol by name. */
-    findCallers(symbolName: string, kind?: string, limit?: number): CallerResult[];
-    /** Find direct callees of a symbol by ID. */
-    findCallees(symbolId: number, kind?: string, limit?: number): CalleeResult[];
-    /** Resolve target_symbol_id for unresolved relationships (batch). */
-    resolveTargets(batchSize?: number): number;
-    /** Get total relationship count. */
-    getRelationshipCount(): number;
-    /** Get relationship statistics by kind. */
-    getStats(): {
+    private pool;
+    constructor(pool: Pool);
+    insertRelationships(relationships: RelationshipInput[]): Promise<void>;
+    deleteFileRelationships(filePath: string): Promise<void>;
+    findCallers(symbolName: string, kind?: string, limit?: number): Promise<CallerResult[]>;
+    findCallees(symbolId: number, kind?: string, limit?: number): Promise<CalleeResult[]>;
+    resolveTargets(batchSize?: number): Promise<number>;
+    getRelationshipCount(): Promise<number>;
+    getStats(): Promise<{
         kind: string;
         count: number;
-    }[];
-    private prepareStatements;
+    }[]>;
 }

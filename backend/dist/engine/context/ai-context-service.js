@@ -42,7 +42,7 @@ export class AIContextService {
                 sectionsOmitted.push(section.name);
                 continue;
             }
-            const content = this.fetchSection(section, targetSymbol, caller_depth);
+            const content = await this.fetchSection(section, targetSymbol, caller_depth);
             if (content == null) {
                 continue; // Section not available
             }
@@ -79,15 +79,15 @@ export class AIContextService {
             }
         };
     }
-    fetchSection(section, symbol, callerDepth) {
+    async fetchSection(section, symbol, callerDepth) {
         try {
             switch (section.name) {
                 case 'source':
                     return this.fetchSource(symbol);
                 case 'callers':
-                    return this.fetchCallers(symbol, callerDepth, section.format);
+                    return await this.fetchCallers(symbol, callerDepth, section.format);
                 case 'callees':
-                    return this.fetchCallees(symbol, callerDepth);
+                    return await this.fetchCallees(symbol, callerDepth);
                 case 'siblings':
                     return this.fetchSiblings(symbol);
                 case 'imports':
@@ -105,7 +105,7 @@ export class AIContextService {
                 case 'test_patterns':
                     return this.fetchTestPatterns(symbol);
                 case 'mocks_needed':
-                    return this.fetchMocksNeeded(symbol);
+                    return await this.fetchMocksNeeded(symbol);
                 default:
                     return null;
             }
@@ -129,8 +129,8 @@ export class AIContextService {
             return null;
         }
     }
-    fetchCallers(symbol, depth, format) {
-        const result = this.callGraph.findCallers(symbol.name, depth, 10);
+    async fetchCallers(symbol, depth, format) {
+        const result = await this.callGraph.findCallers(symbol.name, depth, 10);
         if (result.results.length === 0)
             return null;
         if (format === 'summary') {
@@ -143,8 +143,8 @@ export class AIContextService {
             kind: r.kind
         }));
     }
-    fetchCallees(symbol, depth) {
-        const result = this.callGraph.findCallees(symbol.name, depth, 10);
+    async fetchCallees(symbol, depth) {
+        const result = await this.callGraph.findCallees(symbol.name, depth, 10);
         if (result.results.length === 0)
             return null;
         return result.results.map(r => ({
@@ -243,8 +243,8 @@ export class AIContextService {
             return null;
         return rows.map(r => r.name);
     }
-    fetchMocksNeeded(symbol) {
-        const result = this.callGraph.findCallees(symbol.name, 1, 20);
+    async fetchMocksNeeded(symbol) {
+        const result = await this.callGraph.findCallees(symbol.name, 1, 20);
         if (result.results.length === 0)
             return null;
         const externalDeps = result.results

@@ -46,26 +46,26 @@ export declare class SqliteGraphService {
     private _ready;
     constructor(logger: Logger);
     get ready(): boolean;
-    initialize(): void;
+    initialize(): Promise<void>;
     /**
      * Full sync: reads documents from knowledge_entries and code from symbols table,
      * then builds graph_nodes + graph_edges. Safe to call multiple times (REPLACE semantics).
      */
-    fullSync(): {
+    fullSync(): Promise<{
         nodesCreated: number;
         edgesCreated: number;
         sources: Record<string, number>;
-    };
-    getNodeCount(): number;
-    addNode(entryId: string, label: string, type: string, tier: string): GraphNode;
-    removeNode(entryId: string): void;
-    getNode(entryId: string): GraphNode | null;
-    addEdge(source: string, target: string, weight?: number, relType?: string): void;
+    }>;
+    getNodeCount(): Promise<number>;
+    addNode(entryId: string, label: string, type: string, tier: string): Promise<GraphNode>;
+    removeNode(entryId: string): Promise<void>;
+    getNode(entryId: string): Promise<GraphNode | null>;
+    addEdge(source: string, target: string, weight?: number, relType?: string): Promise<void>;
     /**
      * Returns ALL node positions (minimal data, no edges) for initial full-load rendering.
      * Optimized for Points-based visualization of 200k+ nodes.
      */
-    getAllPositions(): {
+    getAllPositions(): Promise<{
         nodes: {
             id: string;
             x: number;
@@ -76,18 +76,18 @@ export declare class SqliteGraphService {
             label: string;
         }[];
         total: number;
-    };
-    spatialQuery(params: SpatialQueryParams): SpatialGraphResult;
+    }>;
+    spatialQuery(params: SpatialQueryParams): Promise<SpatialGraphResult>;
     syncFromEntries(entries: Array<{
         id: string;
         label: string;
         type: string;
         tier: string;
         groupId?: number;
-    }>): {
+    }>): Promise<{
         nodesCreated: number;
         edgesCreated: number;
-    };
+    }>;
     private computePosition;
     private computePositionByIndex;
     private autoCreateEdges;

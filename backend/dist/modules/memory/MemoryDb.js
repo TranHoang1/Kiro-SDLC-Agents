@@ -1,52 +1,8 @@
-/**
- * MemoryDatabaseManager — initializes memory schema on a dedicated SQLite DB.
- * Uses index-backend.db (same as extension) for data portability.
- */
-import Database from 'better-sqlite3';
-import * as path from 'path';
-import * as fs from 'fs';
-import { fileURLToPath } from 'url';
-import { MEMORY_SCHEMA } from './schema.js';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DB_PATH = path.resolve(__dirname, '../../../.code-intel/index-backend.db');
-let memDb = null;
-/** Get or create the memory database instance (singleton). */
+import { getPool, closePool } from '../../engine/db/pg-pool.js';
 export function getMemoryDb() {
-    if (!memDb) {
-        const dir = path.dirname(DB_PATH);
-        if (!fs.existsSync(dir))
-            fs.mkdirSync(dir, { recursive: true });
-        memDb = new Database(DB_PATH);
-        memDb.pragma('journal_mode = WAL');
-        memDb.pragma('foreign_keys = ON');
-        initializeSchema(memDb);
-    }
-    return memDb;
+    return getPool();
 }
-/** Close the memory database (for graceful shutdown). */
-export function closeMemoryDb() {
-    if (memDb) {
-        memDb.close();
-        memDb = null;
-    }
-}
-function initializeSchema(db) {
-    const stmts = MEMORY_SCHEMA.split(';')
-        .map(s => s.trim())
-        .filter(s => s.length > 0);
-    for (const stmt of stmts) {
-        try {
-            db.exec(stmt + ';');
-        }
-        catch (err) {
-            const msg = err.message ?? '';
-            if (msg.includes('already exists') || msg.includes('duplicate column'))
-                continue;
-            if (msg.includes('no such table') && stmt.includes('fts'))
-                continue;
-            throw err;
-        }
-    }
+export async function closeMemoryDb() {
+    await closePool();
 }
 //# sourceMappingURL=MemoryDb.js.map

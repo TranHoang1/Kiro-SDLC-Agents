@@ -1,7 +1,6 @@
 /**
  * KSA-156: MCP Tool Registration for code_impact.
  */
-import Database from 'better-sqlite3';
 export declare const IMPACT_TOOL_DEFINITIONS: {
     name: string;
     description: string;
@@ -34,4 +33,4 @@ export declare const IMPACT_TOOL_DEFINITIONS: {
         required: string[];
     };
 }[];
-export declare function handleCodeImpact(args: Record<string, unknown>, db: Database.Database, workspace: string): string;
+export declare function handleCodeImpact(args: Record<string, unknown>, db: any, workspace: string): Promise<string>;

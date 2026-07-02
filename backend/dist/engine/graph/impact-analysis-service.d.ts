@@ -44,7 +44,7 @@ export declare class ImpactAnalysisService {
     private db;
     constructor(db: Database.Database, callGraph: CallGraphService, depGraph: DependencyGraphService, resolver: SymbolResolver, testDetector: TestDetector);
     /** Analyze the impact of modifying/deleting/renaming a symbol. */
-    analyzeImpact(symbolName: string, action?: ImpactAction, depth?: number, includeTests?: boolean, severityThreshold?: Severity): ImpactResult;
+    analyzeImpact(symbolName: string, action?: ImpactAction, depth?: number, includeTests?: boolean, severityThreshold?: Severity): Promise<ImpactResult>;
     private classifySeverity;
     private findImplementorImpacts;
     private generateRecommendations;

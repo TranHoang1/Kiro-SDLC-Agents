@@ -10,7 +10,7 @@ export class CallGraphService {
         this.symbolResolver = symbolResolver;
     }
     /** Find all callers of a symbol with transitive depth. */
-    findCallers(symbolName, depth = 1, limit = 20, fileFilter, kindFilter = 'calls') {
+    async findCallers(symbolName, depth = 1, limit = 20, fileFilter, kindFilter = 'calls') {
         const startTime = Date.now();
         const clampedDepth = Math.min(Math.max(depth, 1), 5);
         const resolved = this.symbolResolver.resolve(symbolName);
@@ -31,7 +31,7 @@ export class CallGraphService {
                 continue;
             // Query for each kind
             for (const kind of kinds) {
-                const callers = this.graphRepo.findCallers(current, kind, limit - results.length);
+                const callers = await this.graphRepo.findCallers(current, kind, limit - results.length);
                 for (const caller of callers) {
                     if (visited.has(caller.id))
                         continue;
@@ -69,7 +69,7 @@ export class CallGraphService {
         };
     }
     /** Find all callees of a symbol with transitive depth. */
-    findCallees(symbolName, depth = 1, limit = 20, fileFilter, includeExternal = true, kindFilter = 'calls') {
+    async findCallees(symbolName, depth = 1, limit = 20, fileFilter, includeExternal = true, kindFilter = 'calls') {
         const startTime = Date.now();
         const clampedDepth = Math.min(Math.max(depth, 1), 5);
         const resolved = this.symbolResolver.resolve(symbolName);
@@ -89,7 +89,7 @@ export class CallGraphService {
             if (currentDepth >= clampedDepth)
                 continue;
             for (const kind of kinds) {
-                const callees = this.graphRepo.findCallees(symbolId, kind, limit - results.length);
+                const callees = await this.graphRepo.findCallees(symbolId, kind, limit - results.length);
                 for (const callee of callees) {
                     const key = `${callee.name}:${callee.call_line}`;
                     if (visited.has(key))

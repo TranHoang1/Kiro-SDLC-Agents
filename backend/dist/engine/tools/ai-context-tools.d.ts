@@ -1,7 +1,6 @@
 /**
  * KSA-158/159/160: AI Context MCP tool handlers and definitions.
  */
-import Database from 'better-sqlite3';
 import { DatabaseManager } from '../db/database-manager.js';
 export declare const AI_CONTEXT_TOOL_DEFINITIONS: ({
     name: string;
@@ -131,8 +130,8 @@ export declare const AI_CONTEXT_TOOL_DEFINITIONS: ({
     };
 })[];
 /** Handle get_ai_context tool call. */
-export declare function handleGetAIContext(args: Record<string, unknown>, db: Database.Database, workspace: string): string;
+export declare function handleGetAIContext(args: Record<string, unknown>, db: any, workspace: string): string;
 /** Handle get_edit_context tool call. */
-export declare function handleGetEditContext(args: Record<string, unknown>, db: Database.Database, workspace: string): string;
+export declare function handleGetEditContext(args: Record<string, unknown>, db: any, workspace: string): string;
 /** Handle get_curated_context tool call. */
-export declare function handleGetCuratedContext(args: Record<string, unknown>, db: Database.Database, workspace: string, dbManager: DatabaseManager): string;
+export declare function handleGetCuratedContext(args: Record<string, unknown>, db: any, workspace: string, dbManager: DatabaseManager): string;

@@ -171,7 +171,7 @@ export class EditContextService {
   }
 
   private async getCallerContext(symbol: ResolvedSymbolFull, depth: number): Promise<CallerContext[]> {
-    const result = this.callGraph.findCallers(symbol.name, depth, 10);
+    const result = await this.callGraph.findCallers(symbol.name, depth, 10);
 
     return result.results.map(caller => {
       const context = this.getLineContext(caller.filePath, caller.callSiteLine, 2);

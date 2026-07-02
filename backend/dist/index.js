@@ -13,6 +13,7 @@ import { AnalyticsModule } from './modules/analytics/AnalyticsModule.js';
 import { EmbeddingService } from './engine/parsers/embedding/EmbeddingService.js';
 import { KBGraphModule } from './modules/kb-graph/KBGraphModule.js';
 import { UtilityModule } from './modules/utility/UtilityModule.js';
+import { initAdminDb } from './admin/admin-db.js';
 const VERSION = '1.0.0';
 async function main() {
     const config = loadConfig();
@@ -33,6 +34,8 @@ async function main() {
     registry.register(new AnalyticsModule(logger));
     registry.register(new KBGraphModule(logger));
     registry.register(new UtilityModule(logger));
+    // Ensure admin schema (graph_nodes, graph_edges, users, etc.) exists before modules start
+    await initAdminDb();
     // Initialize all modules in parallel
     await registry.initializeAll();
     // Ingest all registered tools into the dedicated mcp_tools table for dynamic search (find_tools)

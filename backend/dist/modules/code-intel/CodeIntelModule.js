@@ -25,8 +25,8 @@ export class CodeIntelModule {
         try {
             const config = loadConfig();
             this.workspace = config.workspace;
-            this.dbManager = new DatabaseManager(config.dbPath);
-            this.dbManager.initialize();
+            this.dbManager = new DatabaseManager();
+            await this.dbManager.initialize();
             this.indexer = new IndexingEngine(this.dbManager, config);
             this.indexer.startBackgroundIndexing();
             this._status = 'ready';

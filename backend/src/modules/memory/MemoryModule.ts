@@ -34,10 +34,10 @@ export class MemoryModule implements IModule {
     this.logger.info('Initializing memory module');
     try {
       const config = loadConfig();
-      this.dbManager = new DatabaseManager(config.dbPath);
-      this.dbManager.initialize();
+      this.dbManager = new DatabaseManager();
+      await this.dbManager.initialize();
       
-      this.engine = new MemoryEngine(this.dbManager.getDb());
+      this.engine = new MemoryEngine(this.dbManager.getSqliteDb(config.dbPath));
       // Start session for context tracking
       this.engine.startSession('kiro-backend');
       

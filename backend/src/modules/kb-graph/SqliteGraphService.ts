@@ -6,19 +6,18 @@
  * Syncs BOTH knowledge_entries (Documents) AND code symbols from index.db.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
-import Database from 'better-sqlite3';
 import type { Logger } from 'pino';
-import { getAdminDb, getKbEntries } from '../../admin/admin-db.js';
+import * as path from 'path';
+import * as fs from 'fs';
+import { createRequire } from 'module';
+import { getKbEntries } from '../../admin/admin-db.js';
+import { getPool } from '../../engine/db/pg-pool.js';
 import { getWorkspacePath } from '../../config/BackendConfig.js';
-import { resolveNativeBindingSync } from '../../engine/db/native-addon-resolver.js';
 
-function openDb(dbPath: string, options?: Database.Options): Database.Database {
-  const nativeBinding = resolveNativeBindingSync();
-  return nativeBinding
-    ? new Database(dbPath, { ...options, nativeBinding })
-    : new Database(dbPath, options);
+const _require = createRequire(import.meta.url);
+function openDb(filePath: string, opts?: { readonly?: boolean }): any {
+  const Db = _require('better-sqlite3');
+  return new Db(filePath, opts);
 }
 
 export interface SpatialQueryParams {
@@ -92,17 +91,15 @@ export class SqliteGraphService {
 
   get ready(): boolean { return this._ready; }
 
-  initialize(): void {
-    const db = getAdminDb();
-    const count = (db.prepare('SELECT COUNT(*) as cnt FROM graph_nodes').get() as any).cnt;
+  async initialize(): Promise<void> {
+    const pool = getPool();
+    const count = parseInt((await pool.query('SELECT COUNT(*) as cnt FROM graph_nodes')).rows[0].cnt);
     this._ready = true;
-
-    // Auto-sync all data sources if graph is empty
     if (count === 0) {
       this.logger.info('Graph empty — starting full sync from all sources');
-      this.fullSync();
+      await this.fullSync();
     } else {
-      this.logger.info({ existingNodes: this.getNodeCount() }, 'SQLite graph service ready');
+      this.logger.info({ existingNodes: await this.getNodeCount() }, 'Graph service ready');
     }
   }
 
@@ -110,7 +107,7 @@ export class SqliteGraphService {
    * Full sync: reads documents from knowledge_entries and code from symbols table,
    * then builds graph_nodes + graph_edges. Safe to call multiple times (REPLACE semantics).
    */
-  fullSync(): { nodesCreated: number; edgesCreated: number; sources: Record<string, number> } {
+  async fullSync(): Promise<{ nodesCreated: number; edgesCreated: number; sources: Record<string, number> }> {
     const startTime = Date.now();
     const sources: Record<string, number> = {};
 
@@ -128,7 +125,7 @@ export class SqliteGraphService {
     }
 
     // 1a. Knowledge entries (Documents)
-    const docResult = getKbEntries(1, 100000, 'created_at', 'desc');
+    const docResult = await getKbEntries(1, 100000, 'created_at', 'desc');
     for (const entry of docResult.items) {
       const type = (entry.type || 'DOCUMENT').toUpperCase();
       const label = ((entry.summary || entry.tags || '').substring(0, 50)) ||
@@ -142,7 +139,7 @@ export class SqliteGraphService {
       });
       sources[type] = (sources[type] || 0) + 1;
     }
-    this.logger.info({ count: docResult.items.length }, 'Collected knowledge entries');
+    this.logger.info({ count: (docResult as any).items.length }, 'Collected knowledge entries');
 
     // 1b. Code symbols from index.db
     const indexDbPath = path.resolve(getWorkspacePath(), '.code-intel', 'index.db');
@@ -209,7 +206,7 @@ export class SqliteGraphService {
     }
 
     // 2. Write all nodes to graph_nodes
-    const result = this.syncFromEntries(allEntries);
+    const result = await this.syncFromEntries(allEntries);
 
     const elapsed = Date.now() - startTime;
     this.logger.info({ ...result, sources, elapsed: `${elapsed}ms` }, 'Full graph sync complete');
@@ -217,168 +214,152 @@ export class SqliteGraphService {
     return { ...result, sources };
   }
 
-  getNodeCount(): number {
-    return (getAdminDb().prepare('SELECT COUNT(*) as cnt FROM graph_nodes').get() as any).cnt;
+  async getNodeCount(): Promise<number> {
+    return parseInt((await getPool().query('SELECT COUNT(*) as cnt FROM graph_nodes')).rows[0].cnt);
   }
 
-  addNode(entryId: string, label: string, type: string, tier: string): GraphNode {
-    const db = getAdminDb();
-    const existing = db.prepare('SELECT entry_id FROM graph_nodes WHERE entry_id = ?').get(entryId);
-    if (existing) return this.getNode(entryId)!;
-
-    const count = this.getNodeCount();
-    const pos = this.computePosition(count, type);
-    db.prepare(`INSERT OR IGNORE INTO graph_nodes (entry_id, label, type, tier, x, y, z, level, cluster_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(entryId, label.substring(0, 50), type.toUpperCase(), tier, pos.x, pos.y, pos.z, pos.level, pos.clusterId);
-    this.autoCreateEdges(entryId, type.toUpperCase(), tier);
+  async addNode(entryId: string, label: string, type: string, tier: string): Promise<GraphNode> {
+    const pool = getPool();
+    const existing = (await pool.query('SELECT entry_id FROM graph_nodes WHERE entry_id = $1', [entryId])).rows[0];
+    if (existing) return (await this.getNode(entryId))!;
+    const count = await this.getNodeCount();
+    const pos = await this.computePosition(count, type);
+    await pool.query(
+      `INSERT INTO graph_nodes (entry_id, label, type, tier, x, y, z, level, cluster_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING`,
+      [entryId, label.substring(0, 50), type.toUpperCase(), tier, pos.x, pos.y, pos.z, pos.level, pos.clusterId]
+    );
+    await this.autoCreateEdges(entryId, type.toUpperCase(), tier);
     return { id: entryId, label, type: type.toUpperCase(), tier, ...pos };
   }
 
-  removeNode(entryId: string): void {
-    const db = getAdminDb();
-    db.prepare('DELETE FROM graph_edges WHERE source = ? OR target = ?').run(entryId, entryId);
-    db.prepare('DELETE FROM graph_nodes WHERE entry_id = ?').run(entryId);
+  async removeNode(entryId: string): Promise<void> {
+    const pool = getPool();
+    await pool.query('DELETE FROM graph_edges WHERE source = $1 OR target = $1', [entryId]);
+    await pool.query('DELETE FROM graph_nodes WHERE entry_id = $1', [entryId]);
   }
 
-  getNode(entryId: string): GraphNode | null {
-    const row = getAdminDb().prepare('SELECT * FROM graph_nodes WHERE entry_id = ?').get(entryId) as any;
+  async getNode(entryId: string): Promise<GraphNode | null> {
+    const row = (await getPool().query('SELECT * FROM graph_nodes WHERE entry_id = $1', [entryId])).rows[0];
     if (!row) return null;
     return this.rowToNode(row);
   }
 
-  addEdge(source: string, target: string, weight = 0.5, relType = 'RELATED_TO'): void {
-    getAdminDb().prepare('INSERT OR IGNORE INTO graph_edges (source, target, weight, rel_type) VALUES (?, ?, ?, ?)').run(source, target, weight, relType);
+  async addEdge(source: string, target: string, weight = 0.5, relType = 'RELATED_TO'): Promise<void> {
+    await getPool().query(
+      'INSERT INTO graph_edges (source, target, weight, rel_type) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
+      [source, target, weight, relType]
+    );
   }
 
   /**
    * Returns ALL node positions (minimal data, no edges) for initial full-load rendering.
    * Optimized for Points-based visualization of 200k+ nodes.
    */
-  getAllPositions(): { nodes: { id: string; x: number; y: number; z: number; type: string; tier: string; label: string }[]; total: number } {
-    const db = getAdminDb();
-    const rows = db.prepare('SELECT entry_id, x, y, z, type, tier, label FROM graph_nodes').all() as any[];
-    const nodes = rows.map((r: any) => ({
-      id: r.entry_id,
-      x: r.x,
-      y: r.y,
-      z: r.z,
-      type: r.type,
-      tier: r.tier,
-      label: r.label,
-    }));
+  async getAllPositions(): Promise<{ nodes: { id: string; x: number; y: number; z: number; type: string; tier: string; label: string }[]; total: number }> {
+    const rows = (await getPool().query('SELECT entry_id, x, y, z, type, tier, label FROM graph_nodes')).rows;
+    const nodes = rows.map((r: any) => ({ id: r.entry_id, x: r.x, y: r.y, z: r.z, type: r.type, tier: r.tier, label: r.label }));
     return { nodes, total: nodes.length };
   }
 
-  spatialQuery(params: SpatialQueryParams): SpatialGraphResult {
-    const db = getAdminDb();
+  async spatialQuery(params: SpatialQueryParams): Promise<SpatialGraphResult> {
+    const pool = getPool();
     const startTime = performance.now();
     const { camX, camY, camZ, zoom } = params;
-    const r = Math.max(200, zoom * 0.5);
     let nodes: GraphNode[];
     let level: string;
 
     if (zoom > 500) {
       level = 'macro';
-      // Sample evenly from each type (no RANDOM — use LIMIT per type)
-      const types = (db.prepare('SELECT DISTINCT type FROM graph_nodes WHERE level = 0').all() as any[]).map((r: any) => r.type);
+      const types = (await pool.query('SELECT DISTINCT type FROM graph_nodes WHERE level = 0')).rows.map((r: any) => r.type);
       const perType = Math.max(20, Math.floor(500 / Math.max(types.length, 1)));
       const allNodes: any[] = [];
       for (const t of types) {
-        const rows = db.prepare('SELECT * FROM graph_nodes WHERE level = 0 AND type = ? LIMIT ?').all(t, perType) as any[];
+        const rows = (await pool.query('SELECT * FROM graph_nodes WHERE level = 0 AND type = $1 LIMIT $2', [t, perType])).rows;
         allNodes.push(...rows);
       }
       nodes = allNodes.slice(0, 500).map(this.rowToNode);
     } else if (zoom > 200) {
       level = 'mid';
-      nodes = (db.prepare(`
-        SELECT *, ABS(x - ?) + ABS(y - ?) + ABS(z - ?) as manhattan_dist
+      nodes = (await pool.query(`
+        SELECT *, ABS(x - $1) + ABS(y - $2) + ABS(z - $3) as manhattan_dist
         FROM graph_nodes WHERE level <= 1
-        ORDER BY manhattan_dist ASC
-        LIMIT 1500
-      `).all(camX, camY, camZ) as any[]).map(this.rowToNode);
+        ORDER BY manhattan_dist ASC LIMIT 1500
+      `, [camX, camY, camZ])).rows.map(this.rowToNode);
     } else {
       level = 'micro';
-      const nearNodes = db.prepare(`
-        SELECT *, ABS(x - ?) + ABS(y - ?) + ABS(z - ?) as manhattan_dist
-        FROM graph_nodes
-        ORDER BY manhattan_dist ASC
-        LIMIT 10000
-      `).all(camX, camY, camZ) as any[];
-      nodes = nearNodes.map(this.rowToNode);
+      nodes = (await pool.query(`
+        SELECT *, ABS(x - $1) + ABS(y - $2) + ABS(z - $3) as manhattan_dist
+        FROM graph_nodes ORDER BY manhattan_dist ASC LIMIT 10000
+      `, [camX, camY, camZ])).rows.map(this.rowToNode);
     }
 
     let edges: GraphEdge[] = [];
     if (nodes.length > 0) {
       const ids = nodes.map(n => n.id);
-      db.exec('CREATE TEMP TABLE IF NOT EXISTS _vis (id TEXT PRIMARY KEY)');
-      db.exec('DELETE FROM _vis');
-      
-      const insert = db.prepare('INSERT OR IGNORE INTO _vis (id) VALUES (?)');
-      db.transaction((nodeIds: string[]) => {
-        for (const id of nodeIds) {
-          insert.run(id);
-        }
-      })(ids);
-
-      edges = (db.prepare(`
+      edges = (await pool.query(`
         SELECT e.source, e.target, e.weight, e.rel_type
         FROM graph_edges e
-        INNER JOIN _vis v1 ON e.source = v1.id
-        INNER JOIN _vis v2 ON e.target = v2.id
+        WHERE e.source = ANY($1::text[]) AND e.target = ANY($1::text[])
         LIMIT 3000
-      `).all() as any[])
-        .map((row: any) => ({ source: row.source, target: row.target, weight: row.weight, type: row.rel_type }));
+      `, [ids])).rows.map((row: any) => ({ source: row.source, target: row.target, weight: row.weight, type: row.rel_type }));
     }
 
     const queryTimeMs = performance.now() - startTime;
-    // Cache counts (expensive full-table scans)
     if (!(this as any)._cachedEdgeCount || Date.now() - ((this as any)._cachedEdgeCountTime || 0) > 60000) {
-      (this as any)._cachedEdgeCount = (db.prepare('SELECT COUNT(*) as cnt FROM graph_edges').get() as any).cnt;
-      (this as any)._cachedNodeCount = this.getNodeCount();
+      (this as any)._cachedEdgeCount = parseInt((await pool.query('SELECT COUNT(*) as cnt FROM graph_edges')).rows[0].cnt);
+      (this as any)._cachedNodeCount = await this.getNodeCount();
       (this as any)._cachedEdgeCountTime = Date.now();
     }
     return { nodes, edges, stats: { totalNodes: nodes.length, totalEdges: edges.length, queryTimeMs: Math.round(queryTimeMs * 100) / 100, level, totalInDb: (this as any)._cachedNodeCount || 0, totalEdgesInDb: (this as any)._cachedEdgeCount || 0 } };
   }
 
-  syncFromEntries(entries: Array<{ id: string; label: string; type: string; tier: string; groupId?: number }>): { nodesCreated: number; edgesCreated: number } {
-    const db = getAdminDb();
+  async syncFromEntries(entries: Array<{ id: string; label: string; type: string; tier: string; groupId?: number }>): Promise<{ nodesCreated: number; edgesCreated: number }> {
+    const pool = getPool();
     let nodesCreated = 0;
     let edgesCreated = 0;
     const n = entries.length;
 
-    // Compute groupId: use provided groupId if available, otherwise fall back to type-based
     const typeGroups = new Map<string, number>();
     let typeGroupCounter = 0;
-    const totalGroups = Math.max(...entries.map(e => e.groupId ?? 0)) + 1 || 1;
+    const totalGroups = entries.length > 0 ? (Math.max(...entries.map(e => e.groupId ?? 0)) + 1) : 1;
 
-    function resolveGroupId(e: { type: string; groupId?: number }): number {
+    const resolveGroupId = (e: { type: string; groupId?: number }): number => {
       if (e.groupId !== undefined) return e.groupId;
       const type = e.type.toUpperCase();
       if (!typeGroups.has(type)) typeGroups.set(type, typeGroupCounter++);
       return typeGroups.get(type)!;
-    }
+    };
 
-    const insertNode = db.prepare(`INSERT OR REPLACE INTO graph_nodes (entry_id, label, type, tier, x, y, z, level, cluster_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    const insertEdge = db.prepare(`INSERT OR IGNORE INTO graph_edges (source, target, weight, rel_type) VALUES (?, ?, ?, ?)`);
-
-    // Insert nodes in batches of 5000
     const CHUNK = 5000;
     for (let start = 0; start < n; start += CHUNK) {
       const chunk = entries.slice(start, start + CHUNK);
-      db.transaction(() => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
         for (let ci = 0; ci < chunk.length; ci++) {
           const entry = chunk[ci];
           const type = entry.type.toUpperCase();
           const gId = resolveGroupId(entry);
           const pos = this.computePositionByIndex(start + ci, n, type, gId, totalGroups);
-          insertNode.run(entry.id, entry.label.substring(0, 60), type, entry.tier, pos.x, pos.y, pos.z, pos.level, pos.clusterId);
+          await client.query(
+            `INSERT INTO graph_nodes (entry_id, label, type, tier, x, y, z, level, cluster_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (entry_id) DO UPDATE SET label=EXCLUDED.label, type=EXCLUDED.type, tier=EXCLUDED.tier,
+               x=EXCLUDED.x, y=EXCLUDED.y, z=EXCLUDED.z, level=EXCLUDED.level, cluster_id=EXCLUDED.cluster_id`,
+            [entry.id, entry.label.substring(0, 60), type, entry.tier, pos.x, pos.y, pos.z, pos.level, pos.clusterId]
+          );
           nodesCreated++;
         }
-      })();
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+      } finally {
+        client.release();
+      }
     }
 
-    // Build edges via spatial bucketing
-    const allNodeRows = db.prepare('SELECT entry_id, x, y, z, cluster_id, type FROM graph_nodes').all() as any[];
+    const allNodeRows = (await pool.query('SELECT entry_id, x, y, z, cluster_id FROM graph_nodes')).rows;
     const bucketSize = 150;
     const buckets = new Map<string, any[]>();
     for (const row of allNodeRows) {
@@ -390,17 +371,20 @@ export class SqliteGraphService {
       buckets.get(key)!.push(row);
     }
 
-    db.transaction(() => {
+    const edgeClient = await pool.connect();
+    try {
+      await edgeClient.query('BEGIN');
       for (const [, members] of buckets) {
         for (let i = 0; i < members.length; i++) {
           for (let j = i + 1; j < Math.min(members.length, i + 4); j++) {
-            insertEdge.run(members[i].entry_id, members[j].entry_id, 0.7, 'SPATIAL');
+            await edgeClient.query(
+              'INSERT INTO graph_edges (source, target, weight, rel_type) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
+              [members[i].entry_id, members[j].entry_id, 0.7, 'SPATIAL']
+            );
             edgesCreated++;
           }
         }
       }
-
-      // Cross-cluster hub links
       const clusterMap = new Map<string, string>();
       for (const row of allNodeRows) {
         const cid = row.cluster_id || 'default';
@@ -409,24 +393,33 @@ export class SqliteGraphService {
       const hubs = Array.from(clusterMap.values());
       for (let i = 0; i < hubs.length; i++) {
         for (let j = i + 1; j < Math.min(hubs.length, i + 5); j++) {
-          insertEdge.run(hubs[i], hubs[j], 0.5, 'CLUSTER_LINK');
+          await edgeClient.query(
+            'INSERT INTO graph_edges (source, target, weight, rel_type) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
+            [hubs[i], hubs[j], 0.5, 'CLUSTER_LINK']
+          );
           edgesCreated++;
         }
       }
-    })();
+      await edgeClient.query('COMMIT');
+    } catch (e) {
+      await edgeClient.query('ROLLBACK');
+      throw e;
+    } finally {
+      edgeClient.release();
+    }
 
     this.logger.info({ nodesCreated, edgesCreated }, 'syncFromEntries complete');
     return { nodesCreated, edgesCreated };
   }
 
-  private computePosition(index: number, type: string) {
-    const db = getAdminDb();
-    const typeRows = db.prepare('SELECT DISTINCT type FROM graph_nodes').all() as any[];
+  private async computePosition(index: number, type: string) {
+    const pool = getPool();
+    const typeRows = (await pool.query('SELECT DISTINCT type FROM graph_nodes')).rows;
     const groups = new Map<string, number>();
     let gc = 0;
     for (const r of typeRows) { groups.set(r.type, gc++); }
     if (!groups.has(type.toUpperCase())) groups.set(type.toUpperCase(), gc++);
-    return this.computePositionByIndex(index, this.getNodeCount() + 1, type, groups.get(type.toUpperCase()) || 0, gc || 1);
+    return this.computePositionByIndex(index, (await this.getNodeCount()) + 1, type, groups.get(type.toUpperCase()) || 0, gc || 1);
   }
 
   private computePositionByIndex(i: number, total: number, type: string, groupId: number, groupCount: number) {
@@ -480,13 +473,15 @@ export class SqliteGraphService {
     };
   }
 
-  private autoCreateEdges(entryId: string, type: string, tier: string): void {
-    const db = getAdminDb();
-    for (const row of db.prepare('SELECT entry_id FROM graph_nodes WHERE type = ? AND entry_id != ? ORDER BY RANDOM() LIMIT 3').all(type, entryId) as any[]) {
-      db.prepare('INSERT OR IGNORE INTO graph_edges (source, target, weight, rel_type) VALUES (?, ?, ?, ?)').run(entryId, row.entry_id, 0.6, 'TYPE_MATCH');
+  private async autoCreateEdges(entryId: string, type: string, tier: string): Promise<void> {
+    const pool = getPool();
+    const typeRows = (await pool.query('SELECT entry_id FROM graph_nodes WHERE type = $1 AND entry_id != $2 ORDER BY RANDOM() LIMIT 3', [type, entryId])).rows;
+    for (const row of typeRows) {
+      await pool.query('INSERT INTO graph_edges (source, target, weight, rel_type) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING', [entryId, row.entry_id, 0.6, 'TYPE_MATCH']);
     }
-    for (const row of db.prepare('SELECT entry_id FROM graph_nodes WHERE tier = ? AND type != ? AND entry_id != ? ORDER BY RANDOM() LIMIT 1').all(tier, type, entryId) as any[]) {
-      db.prepare('INSERT OR IGNORE INTO graph_edges (source, target, weight, rel_type) VALUES (?, ?, ?, ?)').run(entryId, row.entry_id, 0.4, 'TIER_MATCH');
+    const tierRows = (await pool.query('SELECT entry_id FROM graph_nodes WHERE tier = $1 AND type != $2 AND entry_id != $3 ORDER BY RANDOM() LIMIT 1', [tier, type, entryId])).rows;
+    for (const row of tierRows) {
+      await pool.query('INSERT INTO graph_edges (source, target, weight, rel_type) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING', [entryId, row.entry_id, 0.4, 'TIER_MATCH']);
     }
   }
 

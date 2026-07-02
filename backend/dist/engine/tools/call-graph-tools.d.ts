@@ -1,7 +1,6 @@
 /**
  * KSA-154: MCP Tool Registration for code_callers and code_callees.
  */
-import Database from 'better-sqlite3';
 export declare const CALL_GRAPH_TOOL_DEFINITIONS: ({
     name: string;
     description: string;
@@ -63,5 +62,5 @@ export declare const CALL_GRAPH_TOOL_DEFINITIONS: ({
         required: string[];
     };
 })[];
-export declare function handleCodeCallers(args: Record<string, unknown>, db: Database.Database): string;
-export declare function handleCodeCallees(args: Record<string, unknown>, db: Database.Database): string;
+export declare function handleCodeCallers(args: Record<string, unknown>, db: any): Promise<string>;
+export declare function handleCodeCallees(args: Record<string, unknown>, db: any): Promise<string>;

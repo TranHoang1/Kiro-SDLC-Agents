@@ -25,7 +25,7 @@ export const IMPACT_TOOL_DEFINITIONS = [
         },
     },
 ];
-export function handleCodeImpact(args, db, workspace) {
+export async function handleCodeImpact(args, db, workspace) {
     const symbol = args.symbol;
     if (!symbol)
         return JSON.stringify({ error: 'Parameter "symbol" is required' });
@@ -40,7 +40,7 @@ export function handleCodeImpact(args, db, workspace) {
     const depGraph = new DependencyGraphService(db, fileResolver);
     const testDetector = new TestDetector(db);
     const service = new ImpactAnalysisService(db, callGraph, depGraph, resolver, testDetector);
-    const result = service.analyzeImpact(symbol, action, depth, includeTests, severityThreshold);
+    const result = await service.analyzeImpact(symbol, action, depth, includeTests, severityThreshold);
     return formatImpactResult(result);
 }
 function formatImpactResult(result) {

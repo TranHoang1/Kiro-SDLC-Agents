@@ -1,11 +1,5 @@
-/**
- * KSA-153: Schema Migrator — Applies graph schema migrations.
- * Extends the existing migration system with graph-specific tables and columns.
- */
+import { Pool } from 'pg';
 
-import Database from 'better-sqlite3';
-
-/** Enhanced symbol columns added for tree-sitter (KSA-145/153). */
 const ENHANCED_SYMBOL_COLUMNS = [
   { name: 'parameters', type: 'TEXT' },
   { name: 'return_type', type: 'TEXT' },
@@ -20,16 +14,16 @@ const ENHANCED_SYMBOL_COLUMNS = [
 
 const GRAPH_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS relationships (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_symbol_id INTEGER NOT NULL,
-    target_symbol TEXT NOT NULL,
-    target_symbol_id INTEGER,
-    kind TEXT NOT NULL CHECK(kind IN ('calls','imports','inherits','implements','uses','decorates')),
-    file_path TEXT NOT NULL,
-    line INTEGER NOT NULL,
-    metadata TEXT,
-    FOREIGN KEY (source_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
-    FOREIGN KEY (target_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL
+  id SERIAL PRIMARY KEY,
+  source_symbol_id INTEGER NOT NULL,
+  target_symbol TEXT NOT NULL,
+  target_symbol_id INTEGER,
+  kind TEXT NOT NULL CHECK(kind IN ('calls','imports','inherits','implements','uses','decorates')),
+  file_path TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  metadata TEXT,
+  FOREIGN KEY (source_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
+  FOREIGN KEY (target_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_rel_source_kind ON relationships(source_symbol_id, kind);
@@ -40,12 +34,12 @@ CREATE INDEX IF NOT EXISTS idx_rel_file ON relationships(file_path);
 
 const FILE_INDEX_SQL = `
 CREATE TABLE IF NOT EXISTS file_index (
-    path TEXT PRIMARY KEY,
-    mtime INTEGER NOT NULL,
-    content_hash TEXT NOT NULL,
-    size_bytes INTEGER NOT NULL,
-    last_indexed TEXT NOT NULL DEFAULT (datetime('now')),
-    symbol_count INTEGER DEFAULT 0
+  path TEXT PRIMARY KEY,
+  mtime INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  last_indexed TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+  symbol_count INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_file_index_hash ON file_index(content_hash);
@@ -53,67 +47,66 @@ CREATE INDEX IF NOT EXISTS idx_file_index_hash ON file_index(content_hash);
 
 const GRAPH_META_SQL = `
 CREATE TABLE IF NOT EXISTS graph_meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO graph_meta (key, value) VALUES
-    ('schema_version', '3'),
-    ('last_checkpoint', ''),
-    ('total_nodes', '0'),
-    ('total_edges', '0');
+INSERT INTO graph_meta (key, value) VALUES
+  ('schema_version', '3'),
+  ('last_checkpoint', ''),
+  ('total_nodes', '0'),
+  ('total_edges', '0')
+ON CONFLICT DO NOTHING;
 `;
 
 const BODY_EMBEDDINGS_SQL = `
 CREATE TABLE IF NOT EXISTS body_embeddings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    symbol_id INTEGER NOT NULL,
-    chunk_index INTEGER NOT NULL DEFAULT 0,
-    embedding BLOB NOT NULL,
-    token_count INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(symbol_id, chunk_index),
-    FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+  id SERIAL PRIMARY KEY,
+  symbol_id INTEGER NOT NULL,
+  chunk_index INTEGER NOT NULL DEFAULT 0,
+  embedding BYTEA NOT NULL,
+  token_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+  UNIQUE(symbol_id, chunk_index),
+  FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_body_embeddings_symbol ON body_embeddings(symbol_id);
 `;
 
-/**
- * Run graph-related migrations (KSA-153 + KSA-169).
- * Safe to call multiple times — all operations are idempotent.
- */
-export function runGraphMigrations(db: Database.Database): void {
+export async function runGraphMigrations(pool: Pool): Promise<void> {
   console.error('[graph-migrator] Running graph schema migrations...');
 
-  addEnhancedSymbolColumns(db);
-  db.exec(GRAPH_SCHEMA_SQL);
+  await addEnhancedSymbolColumns(pool);
+  await pool.query(GRAPH_SCHEMA_SQL);
   console.error('[graph-migrator] Relationships table ready');
 
-  db.exec(FILE_INDEX_SQL);
+  await pool.query(FILE_INDEX_SQL);
   console.error('[graph-migrator] File index table ready');
 
-  db.exec(GRAPH_META_SQL);
+  await pool.query(GRAPH_META_SQL);
   console.error('[graph-migrator] Graph metadata table ready');
 
-  db.exec(BODY_EMBEDDINGS_SQL);
+  await pool.query(BODY_EMBEDDINGS_SQL);
   console.error('[graph-migrator] Body embeddings table ready');
 
-  db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (?)').run(3);
+  await pool.query(
+    "INSERT INTO schema_version (version) VALUES (3) ON CONFLICT (version) DO UPDATE SET version = 3"
+  );
   console.error('[graph-migrator] Schema version set to 3');
 }
 
-function addEnhancedSymbolColumns(db: Database.Database): void {
-  const existing = getExistingColumns(db, 'symbols');
+async function addEnhancedSymbolColumns(pool: Pool): Promise<void> {
+  const existing = await getExistingColumns(pool, 'symbols');
   let added = 0;
 
   for (const col of ENHANCED_SYMBOL_COLUMNS) {
     if (!existing.has(col.name)) {
       try {
-        db.exec(`ALTER TABLE symbols ADD COLUMN ${col.name} ${col.type}`);
+        await pool.query(`ALTER TABLE symbols ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`);
         added++;
       } catch {
-        // Column may already exist
+        // column may already exist
       }
     }
   }
@@ -121,27 +114,29 @@ function addEnhancedSymbolColumns(db: Database.Database): void {
   if (added > 0) {
     console.error(`[graph-migrator] Added ${added} enhanced symbol columns`);
     try {
-      db.exec('CREATE INDEX IF NOT EXISTS idx_sym_parent ON symbols(parent_symbol_id) WHERE parent_symbol_id IS NOT NULL');
-      db.exec('CREATE INDEX IF NOT EXISTS idx_sym_exported ON symbols(is_exported) WHERE is_exported = 1');
-      db.exec('CREATE INDEX IF NOT EXISTS idx_sym_file_kind ON symbols(file_id, kind)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_sym_parent ON symbols(parent_symbol_id) WHERE parent_symbol_id IS NOT NULL');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_sym_exported ON symbols(is_exported) WHERE is_exported = 1');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_sym_file_kind ON symbols(file_id, kind)');
     } catch {
-      // Indexes may already exist
+      // indexes may already exist
     }
   }
 }
 
-function getExistingColumns(db: Database.Database, table: string): Set<string> {
-  const rows = db.pragma(`table_info(${table})`) as { name: string }[];
-  return new Set(rows.map(r => r.name));
+async function getExistingColumns(pool: Pool, table: string): Promise<Set<string>> {
+  const result = await pool.query(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1",
+    [table]
+  );
+  return new Set(result.rows.map((r: any) => r.column_name));
 }
 
-/** Check if graph migrations have been applied. */
-export function isGraphSchemaReady(db: Database.Database): boolean {
+export async function isGraphSchemaReady(pool: Pool): Promise<boolean> {
   try {
-    const tables = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='relationships'"
-    ).get();
-    return !!tables;
+    const result = await pool.query(
+      "SELECT COUNT(*) as cnt FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'relationships'"
+    );
+    return parseInt(result.rows[0].cnt) > 0;
   } catch {
     return false;
   }

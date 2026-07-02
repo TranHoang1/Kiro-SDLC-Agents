@@ -1,9 +1,3 @@
-/**
- * Migration runner — sequential, versioned schema migrations.
- * Each migration is applied once and tracked in schema_version table.
- */
-import Database from 'better-sqlite3';
-/** Get current schema version from database. */
-export declare function getCurrentVersion(db: Database.Database): number;
-/** Run all pending migrations sequentially. */
-export declare function runMigrations(db: Database.Database): void;
+import { Pool } from 'pg';
+export declare function getCurrentVersion(pool: Pool): Promise<number>;
+export declare function runMigrations(pool: Pool): Promise<void>;

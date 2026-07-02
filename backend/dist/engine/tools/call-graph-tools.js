@@ -2,6 +2,7 @@
  * KSA-154: MCP Tool Registration for code_callers and code_callees.
  */
 import { GraphRepository } from '../database/graph-repository.js';
+import { getPool } from '../db/pg-pool.js';
 import { SymbolResolver } from '../graph/symbol-resolver.js';
 import { CallGraphService } from '../graph/call-graph-service.js';
 export const CALL_GRAPH_TOOL_DEFINITIONS = [
@@ -36,7 +37,7 @@ export const CALL_GRAPH_TOOL_DEFINITIONS = [
         },
     },
 ];
-export function handleCodeCallers(args, db) {
+export async function handleCodeCallers(args, db) {
     const symbol = args.symbol;
     if (!symbol)
         return JSON.stringify({ error: 'Parameter "symbol" is required' });
@@ -44,13 +45,13 @@ export function handleCodeCallers(args, db) {
     const limit = args.limit ?? 20;
     const fileFilter = args.file_filter;
     const kindFilter = args.kind_filter ?? 'calls';
-    const graphRepo = new GraphRepository(db);
+    const graphRepo = new GraphRepository(getPool());
     const resolver = new SymbolResolver(db);
     const service = new CallGraphService(graphRepo, resolver);
-    const result = service.findCallers(symbol, depth, limit, fileFilter, kindFilter);
+    const result = await service.findCallers(symbol, depth, limit, fileFilter, kindFilter);
     return formatCallGraphResult(result, 'callers');
 }
-export function handleCodeCallees(args, db) {
+export async function handleCodeCallees(args, db) {
     const symbol = args.symbol;
     if (!symbol)
         return JSON.stringify({ error: 'Parameter "symbol" is required' });
@@ -58,10 +59,10 @@ export function handleCodeCallees(args, db) {
     const limit = args.limit ?? 20;
     const fileFilter = args.file_filter;
     const includeExternal = args.include_external ?? true;
-    const graphRepo = new GraphRepository(db);
+    const graphRepo = new GraphRepository(getPool());
     const resolver = new SymbolResolver(db);
     const service = new CallGraphService(graphRepo, resolver);
-    const result = service.findCallees(symbol, depth, limit, fileFilter, includeExternal);
+    const result = await service.findCallees(symbol, depth, limit, fileFilter, includeExternal);
     return formatCallGraphResult(result, 'callees');
 }
 function formatCallGraphResult(result, direction) {

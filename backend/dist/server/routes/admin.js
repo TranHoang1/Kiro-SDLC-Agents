@@ -7,8 +7,9 @@ import { Hono } from 'hono';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { getAdminDb, verifyPassword, createSession, validateSession, invalidateSession, invalidateUserSessions, refreshSession, getUsers, getUserById, getUserByUsername, createUser, updateUserStatus, deleteUser, resetUserPassword, changePassword, updateLastLogin, getGroups, getGroupById, createGroup, updateGroup, deleteGroup, getUserPermissions, getUserSessions, recordAudit, getAuditLogs, recordConfigChange, getConfigChanges, getKbEntryCount, getKbEntries, getRecentActivity, recordQueryLog, getQueryLogs, getQueryLogStats, setPromotionCooldown, checkPromotionCooldown, searchKbEntries, getKbEmbeddings, getKbEntryById, getAllKbTags, updateKbEntryTags, renameKbTag, deleteKbTag, mergeKbTags, getKbEntriesByTag, } from '../../admin/admin-db.js';
+import { initAdminDb, verifyPassword, createSession, validateSession, invalidateSession, invalidateUserSessions, refreshSession, getUsers, getUserById, getUserByUsername, createUser, updateUserStatus, deleteUser, resetUserPassword, changePassword, updateLastLogin, getGroups, getGroupById, createGroup, updateGroup, deleteGroup, getUserPermissions, getUserSessions, recordAudit, getAuditLogs, recordConfigChange, getConfigChanges, getKbEntryCount, getKbEntries, getRecentActivity, recordQueryLog, getQueryLogs, getQueryLogStats, setPromotionCooldown, checkPromotionCooldown, searchKbEntries, getKbEmbeddings, getKbEntryById, getAllKbTags, updateKbEntryTags, renameKbTag, deleteKbTag, mergeKbTags, getKbEntriesByTag, } from '../../admin/admin-db.js';
 import { loadConfig, getWorkspacePath } from '../../config/BackendConfig.js';
+import { getPool } from '../../engine/db/pg-pool.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 function formatUptime(ms) {
@@ -32,11 +33,11 @@ function formatBytes(bytes) {
 export function createAdminRoute(logger) {
     const app = new Hono();
     // Initialize DB on first load
-    getAdminDb();
+    initAdminDb();
     // Resolve SPA file path
     const spaPath = path.resolve(__dirname, '../../admin-ui/dist/index.html');
     // Admin SPA
-    app.get('/admin', (c) => {
+    app.get('/admin', async (c) => {
         if (fs.existsSync(spaPath)) {
             let html = fs.readFileSync(spaPath, 'utf-8');
             const token = c.req.query('token');
@@ -57,31 +58,31 @@ export function createAdminRoute(logger) {
         return c.text('Admin Portal not found', 404);
     });
     // Serve LOD scripts for KB Graph
-    app.get('/admin/kb-graph-renderer.js', (c) => {
+    app.get('/admin/kb-graph-renderer.js', async (c) => {
         const fp = path.resolve(__dirname, '../../admin-ui/dist/kb-graph-renderer.js');
         if (fs.existsSync(fp))
             return new Response(fs.readFileSync(fp, 'utf-8'), { headers: { 'Content-Type': 'application/javascript', 'Cache-Control': 'no-cache' } });
         return c.text('Not found', 404);
     });
-    app.get('/admin/lod-clustering.js', (c) => {
+    app.get('/admin/lod-clustering.js', async (c) => {
         const fp = path.resolve(__dirname, '../../admin-ui/dist/lod-clustering.js');
         if (fs.existsSync(fp))
             return new Response(fs.readFileSync(fp, 'utf-8'), { headers: { 'Content-Type': 'application/javascript' } });
         return c.text('Not found', 404);
     });
-    app.get('/admin/lod-manager.js', (c) => {
+    app.get('/admin/lod-manager.js', async (c) => {
         const fp = path.resolve(__dirname, '../../admin-ui/dist/lod-manager.js');
         if (fs.existsSync(fp))
             return new Response(fs.readFileSync(fp, 'utf-8'), { headers: { 'Content-Type': 'application/javascript' } });
         return c.text('Not found', 404);
     });
-    app.get('/admin/lod-animation.js', (c) => {
+    app.get('/admin/lod-animation.js', async (c) => {
         const fp = path.resolve(__dirname, '../../admin-ui/dist/lod-animation.js');
         if (fs.existsSync(fp))
             return new Response(fs.readFileSync(fp, 'utf-8'), { headers: { 'Content-Type': 'application/javascript' } });
         return c.text('Not found', 404);
     });
-    app.get('/admin/*', (c) => {
+    app.get('/admin/*', async (c) => {
         if (fs.existsSync(spaPath)) {
             const html = fs.readFileSync(spaPath, 'utf-8');
             return c.html(html);
@@ -89,21 +90,21 @@ export function createAdminRoute(logger) {
         return c.text('Admin Portal not found', 404);
     });
     // ===== Auth Middleware Helper =====
-    const authenticate = (c) => {
+    const authenticate = async (c) => {
         const auth = c.req.header('Authorization') || '';
         const token = auth.replace('Bearer ', '');
         if (!token)
             return null;
-        const session = validateSession(token);
+        const session = await validateSession(token);
         if (!session)
             return null;
         // Impersonation: admin can view as another user
         const impersonateId = c.req.header('X-Impersonate') || '';
         if (impersonateId && impersonateId !== session.userId) {
             // Only admins with RBAC_MANAGE can impersonate
-            const { has } = checkPermission(session.userId, 'RBAC_MANAGE');
+            const { has } = await checkPermission(session.userId, 'RBAC_MANAGE');
             if (has) {
-                const target = getUserById(impersonateId);
+                const target = await getUserById(impersonateId);
                 if (target) {
                     return { userId: target.userId, username: target.username, accessGroupId: target.accessGroupId, impersonating: true };
                 }
@@ -111,8 +112,8 @@ export function createAdminRoute(logger) {
         }
         return session;
     };
-    const requireAuth = (c) => {
-        const user = authenticate(c);
+    const requireAuth = async (c) => {
+        const user = await authenticate(c);
         if (!user)
             return c.json({ error: 'Unauthorized' }, 401);
         return user;
@@ -122,8 +123,8 @@ export function createAdminRoute(logger) {
      * Check if user has a specific permission.
      * Returns the permission's roleData if found, or null if not.
      */
-    const checkPermission = (userId, requiredPermission) => {
-        const permissions = getUserPermissions(userId);
+    const checkPermission = async (userId, requiredPermission) => {
+        const permissions = await getUserPermissions(userId);
         const perm = permissions.find(p => p.permissionId === requiredPermission);
         if (!perm)
             return { has: false, roleData: {} };
@@ -133,8 +134,8 @@ export function createAdminRoute(logger) {
      * Require a specific permission. Returns 403 Response if user doesn't have it,
      * or { roleData } object if permission is granted.
      */
-    const requirePermission = (c, userId, requiredPermission) => {
-        const { has, roleData } = checkPermission(userId, requiredPermission);
+    const requirePermission = async (c, userId, requiredPermission) => {
+        const { has, roleData } = await checkPermission(userId, requiredPermission);
         if (!has)
             return c.json({ error: 'Forbidden: missing permission ' + requiredPermission }, 403);
         return { roleData };
@@ -147,24 +148,24 @@ export function createAdminRoute(logger) {
             if (!username || !password) {
                 return c.json({ error: 'Username and password required' }, 400);
             }
-            const user = getUserByUsername(username);
+            const user = await getUserByUsername(username);
             if (!user) {
-                recordAudit('unknown', username, 'LOGIN_FAILED', 'auth', undefined, 'User not found');
+                await recordAudit('unknown', username, 'LOGIN_FAILED', 'auth', undefined, 'User not found');
                 return c.json({ error: 'Invalid credentials' }, 401);
             }
             if (user.status !== 'ACTIVE') {
-                recordAudit(user.userId, username, 'LOGIN_FAILED', 'auth', undefined, 'Account disabled');
+                await recordAudit(user.userId, username, 'LOGIN_FAILED', 'auth', undefined, 'Account disabled');
                 return c.json({ error: 'Account is disabled' }, 403);
             }
             if (!verifyPassword(password, user.passwordHash)) {
-                recordAudit(user.userId, username, 'LOGIN_FAILED', 'auth', undefined, 'Wrong password');
+                await recordAudit(user.userId, username, 'LOGIN_FAILED', 'auth', undefined, 'Wrong password');
                 return c.json({ error: 'Invalid credentials' }, 401);
             }
             // Create session
-            const session = createSession(user.userId);
-            updateLastLogin(user.userId);
-            recordAudit(user.userId, username, 'LOGIN', 'auth', session.sessionId);
-            const permissions = getUserPermissions(user.userId);
+            const session = await createSession(user.userId);
+            await updateLastLogin(user.userId);
+            await recordAudit(user.userId, username, 'LOGIN', 'auth', session.sessionId);
+            const permissions = await getUserPermissions(user.userId);
             return c.json({
                 token: session.token,
                 user: {
@@ -196,11 +197,11 @@ export function createAdminRoute(logger) {
             catch { }
         }
         if (token) {
-            const user = validateSession(token);
+            const user = await validateSession(token);
             if (user) {
-                recordAudit(user.userId, user.username, 'LOGOUT', 'auth');
+                await recordAudit(user.userId, user.username, 'LOGOUT', 'auth');
             }
-            invalidateSession(token);
+            await invalidateSession(token);
         }
         return c.json({ success: true });
     };
@@ -214,7 +215,7 @@ export function createAdminRoute(logger) {
             if (!refresh_token) {
                 return c.json({ error: 'Refresh token required' }, 400);
             }
-            const result = refreshSession(refresh_token);
+            const result = await refreshSession(refresh_token);
             if (!result) {
                 return c.json({ error: 'Invalid or expired session' }, 401);
             }
@@ -232,7 +233,7 @@ export function createAdminRoute(logger) {
     app.post('/api/auth/refresh', handleRefresh);
     // POST /api/admin/auth/change-password
     app.post('/api/admin/auth/change-password', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
         const { currentPassword, newPassword } = await c.req.json();
@@ -242,21 +243,21 @@ export function createAdminRoute(logger) {
         if (newPassword.length < 6) {
             return c.json({ error: 'Password must be at least 6 characters' }, 400);
         }
-        const dbUser = getUserByUsername(user.username);
+        const dbUser = await getUserByUsername(user.username);
         if (!dbUser || !verifyPassword(currentPassword, dbUser.passwordHash)) {
             return c.json({ error: 'Current password is incorrect' }, 401);
         }
-        changePassword(user.userId, newPassword);
-        recordAudit(user.userId, user.username, 'CHANGE_PASSWORD', 'auth');
+        await changePassword(user.userId, newPassword);
+        await recordAudit(user.userId, user.username, 'CHANGE_PASSWORD', 'auth');
         return c.json({ success: true });
     });
     // GET /api/admin/auth/me
-    app.get('/api/admin/auth/me', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/auth/me', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permissions = getUserPermissions(user.userId);
-        const dbUser = getUserById(user.userId);
+        const permissions = await getUserPermissions(user.userId);
+        const dbUser = await getUserById(user.userId);
         return c.json({
             userId: user.userId,
             username: user.username,
@@ -268,18 +269,17 @@ export function createAdminRoute(logger) {
     });
     // ===== Stats (Real Metrics) =====
     const SERVER_START_TIME = Date.now();
-    app.get('/api/admin/stats', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/stats', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'DASHBOARD_VIEW');
+        const permCheck = await requirePermission(c, user.userId, 'DASHBOARD_VIEW');
         if (permCheck instanceof Response)
             return permCheck;
         // Check KB_READ permission for tier-based filtering
-        const kbPerm = checkPermission(user.userId, 'KB_READ');
+        const kbPerm = await checkPermission(user.userId, 'KB_READ');
         const allowedTiers = kbPerm.roleData?.allowedTiers;
-        const d = getAdminDb();
-        const userCount = d.prepare('SELECT COUNT(*) as cnt FROM users').get().cnt;
+        const userCount = parseInt((await getPool().query('SELECT COUNT(*) as cnt FROM users')).rows[0].cnt);
         const cfg = loadConfig();
         const orchPath = path.resolve(getWorkspacePath(), cfg.dataDir, cfg.orchestrationConfigPath);
         let mcpCount = 0;
@@ -292,18 +292,18 @@ export function createAdminRoute(logger) {
         // Apply tier filtering to KB entry count
         let kbEntries;
         if (Array.isArray(allowedTiers) && kbPerm.has) {
-            const allEntries = getKbEntries(1, 100000, 'created_at', 'desc');
+            const allEntries = await getKbEntries(1, 100000, 'created_at', 'desc');
             kbEntries = allEntries.items.filter((e) => {
                 const entryTier = e.tier || e.scope || 'SHARED';
                 return allowedTiers.includes(entryTier);
             }).length;
         }
         else {
-            kbEntries = getKbEntryCount();
+            kbEntries = await getKbEntryCount();
         }
         const uptimeMs = Date.now() - SERVER_START_TIME;
         const mem = process.memoryUsage();
-        const recentActivity = getRecentActivity(10);
+        const recentActivity = await getRecentActivity(10);
         return c.json({
             kbEntries,
             users: userCount,
@@ -322,18 +322,18 @@ export function createAdminRoute(logger) {
         });
     });
     // ===== Impersonation =====
-    app.get('/api/admin/impersonate/:userId', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/impersonate/:userId', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'RBAC_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'RBAC_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         const targetId = c.req.param('userId');
-        const target = getUserById(targetId);
+        const target = await getUserById(targetId);
         if (!target)
             return c.json({ error: 'User not found' }, 404);
-        const targetPerms = getUserPermissions(targetId);
+        const targetPerms = await getUserPermissions(targetId);
         return c.json({
             userId: target.userId,
             username: target.username,
@@ -343,12 +343,12 @@ export function createAdminRoute(logger) {
         });
     });
     // ===== Profile =====
-    app.get('/api/admin/profile', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/profile', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const dbUser = getUserById(user.userId);
-        const permissions = getUserPermissions(user.userId);
+        const dbUser = await getUserById(user.userId);
+        const permissions = await getUserPermissions(user.userId);
         return c.json({
             userId: user.userId,
             username: user.username,
@@ -360,11 +360,11 @@ export function createAdminRoute(logger) {
         });
     });
     // ===== User Management =====
-    app.get('/api/admin/users', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/users', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'USER_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'USER_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         const page = parseInt(c.req.query('page') || '1');
@@ -372,7 +372,7 @@ export function createAdminRoute(logger) {
         const status = c.req.query('status') || undefined;
         const search = c.req.query('search') || undefined;
         const accessGroupId = c.req.query('accessGroupId') || undefined;
-        const result = getUsers({ status, search, accessGroupId }, page, pageSize);
+        const result = await getUsers({ status, search, accessGroupId }, page, pageSize);
         return c.json({
             users: result.items,
             total: result.total,
@@ -381,24 +381,24 @@ export function createAdminRoute(logger) {
             totalPages: Math.ceil(result.total / pageSize),
         });
     });
-    app.get('/api/admin/users/:id', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/users/:id', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'USER_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'USER_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
-        const targetUser = getUserById(c.req.param('id'));
+        const targetUser = await getUserById(c.req.param('id'));
         if (!targetUser)
             return c.json({ error: 'User not found' }, 404);
-        const sessions = getUserSessions(targetUser.userId);
+        const sessions = await getUserSessions(targetUser.userId);
         return c.json({ ...targetUser, sessions });
     });
     app.post('/api/admin/users', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'USER_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'USER_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         try {
@@ -410,11 +410,11 @@ export function createAdminRoute(logger) {
                 return c.json({ error: 'Username must be at least 3 characters' }, 400);
             if (password.length < 6)
                 return c.json({ error: 'Password must be at least 6 characters' }, 400);
-            const group = getGroupById(accessGroupId);
+            const group = await getGroupById(accessGroupId);
             if (!group)
                 return c.json({ error: 'Access group not found' }, 400);
-            const newUser = createUser(username, email || '', password, accessGroupId);
-            recordAudit(user.userId, user.username, 'CREATE_USER', 'users', newUser.userId, JSON.stringify({ username, accessGroupId }));
+            const newUser = await createUser(username, email || '', password, accessGroupId);
+            await recordAudit(user.userId, user.username, 'CREATE_USER', 'users', newUser.userId, JSON.stringify({ username, accessGroupId }));
             return c.json({ success: true, user: newUser }, 201);
         }
         catch (err) {
@@ -426,10 +426,10 @@ export function createAdminRoute(logger) {
         }
     });
     app.put('/api/admin/users/:id/status', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'USER_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'USER_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         const targetId = c.req.param('id');
@@ -437,105 +437,106 @@ export function createAdminRoute(logger) {
         if (!status || !['ACTIVE', 'DISABLED'].includes(status)) {
             return c.json({ error: 'Invalid status. Must be ACTIVE or DISABLED' }, 400);
         }
-        const target = getUserById(targetId);
+        const target = await getUserById(targetId);
         if (!target)
             return c.json({ error: 'User not found' }, 404);
         if (target.username === 'admin' && status === 'DISABLED') {
             return c.json({ error: 'Cannot disable system admin' }, 403);
         }
-        const sessionsTerminated = updateUserStatus(targetId, status);
-        recordAudit(user.userId, user.username, 'UPDATE_USER_STATUS', 'users', targetId, JSON.stringify({ status, sessionsTerminated }));
+        const sessionsTerminated = await updateUserStatus(targetId, status);
+        await recordAudit(user.userId, user.username, 'UPDATE_USER_STATUS', 'users', targetId, JSON.stringify({ status, sessionsTerminated }));
         return c.json({ success: true, sessionsTerminated });
     });
-    app.delete('/api/admin/users/:id', (c) => {
-        const user = requireAuth(c);
+    app.delete('/api/admin/users/:id', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'USER_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'USER_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         const targetId = c.req.param('id');
         try {
-            const target = getUserById(targetId);
+            const target = await getUserById(targetId);
             if (!target)
                 return c.json({ error: 'User not found' }, 404);
-            deleteUser(targetId);
-            recordAudit(user.userId, user.username, 'DELETE_USER', 'users', targetId, JSON.stringify({ username: target.username }));
+            await deleteUser(targetId);
+            await recordAudit(user.userId, user.username, 'DELETE_USER', 'users', targetId, JSON.stringify({ username: target.username }));
             return c.json({ success: true });
         }
         catch (err) {
             return c.json({ error: err.message }, 400);
         }
     });
-    app.post('/api/admin/users/:id/force-logout', (c) => {
-        const user = requireAuth(c);
+    app.post('/api/admin/users/:id/force-logout', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'USER_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'USER_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         const targetId = c.req.param('id');
-        const target = getUserById(targetId);
+        const target = await getUserById(targetId);
         if (!target)
             return c.json({ error: 'User not found' }, 404);
-        const terminated = invalidateUserSessions(targetId);
-        recordAudit(user.userId, user.username, 'FORCE_LOGOUT', 'users', targetId, JSON.stringify({ terminated }));
+        const terminated = await invalidateUserSessions(targetId);
+        await recordAudit(user.userId, user.username, 'FORCE_LOGOUT', 'users', targetId, JSON.stringify({ terminated }));
         return c.json({ success: true, terminated });
     });
-    app.post('/api/admin/users/:id/reset-password', (c) => {
-        const user = requireAuth(c);
+    app.post('/api/admin/users/:id/reset-password', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'USER_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'USER_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         const targetId = c.req.param('id');
-        const target = getUserById(targetId);
+        const target = await getUserById(targetId);
         if (!target)
             return c.json({ error: 'User not found' }, 404);
-        const temporaryPassword = resetUserPassword(targetId);
-        invalidateUserSessions(targetId);
-        recordAudit(user.userId, user.username, 'RESET_PASSWORD', 'users', targetId);
+        const temporaryPassword = await resetUserPassword(targetId);
+        await invalidateUserSessions(targetId);
+        await recordAudit(user.userId, user.username, 'RESET_PASSWORD', 'users', targetId);
         return c.json({ success: true, temporaryPassword });
     });
     // ===== RBAC =====
-    app.get('/api/admin/rbac/groups', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/rbac/groups', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'RBAC_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'RBAC_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
-        const groups = getGroups();
-        const d = getAdminDb();
-        const countStmt = d.prepare('SELECT COUNT(*) as cnt FROM users WHERE access_group_id = ?');
+        const groups = await getGroups();
+        const userCounts = await Promise.all(groups.map(g => getPool().query('SELECT COUNT(*) as cnt FROM users WHERE access_group_id = $1', [g.accessGroupId])
+            .then(r => [g.accessGroupId, parseInt(r.rows[0].cnt)])));
+        const countMap = new Map(userCounts);
         const result = groups.map(g => ({
             ...g,
             id: g.accessGroupId,
             name: g.accessGroupName,
             isSystem: g.isSystemGroup,
-            userCount: countStmt.get(g.accessGroupId).cnt,
-            permissions: g.permissions.map(p => ({ name: p.permissionId, roleData: p.roleData })),
+            userCount: countMap.get(g.accessGroupId) || 0,
+            permissions: g.permissions.map((p) => ({ name: p.permissionId, roleData: p.roleData })),
         }));
         return c.json({ groups: result });
     });
-    app.get('/api/admin/rbac/groups/:id', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/rbac/groups/:id', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'RBAC_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'RBAC_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
-        const group = getGroupById(c.req.param('id'));
+        const group = await getGroupById(c.req.param('id'));
         if (!group)
             return c.json({ error: 'Group not found' }, 404);
         return c.json(group);
     });
     app.post('/api/admin/rbac/groups', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'RBAC_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'RBAC_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         try {
@@ -547,8 +548,8 @@ export function createAdminRoute(logger) {
                 permissionId: p.name || p.permissionId,
                 roleData: p.roleData || {},
             }));
-            const group = createGroup(name, permissions);
-            recordAudit(user.userId, user.username, 'CREATE_GROUP', 'rbac', group.accessGroupId, JSON.stringify({ name }));
+            const group = await createGroup(name, permissions);
+            await recordAudit(user.userId, user.username, 'CREATE_GROUP', 'rbac', group.accessGroupId, JSON.stringify({ name }));
             return c.json({ success: true, group: { ...group, id: group.accessGroupId, name: group.accessGroupName, isSystem: false } }, 201);
         }
         catch (err) {
@@ -558,10 +559,10 @@ export function createAdminRoute(logger) {
         }
     });
     app.put('/api/admin/rbac/groups/:id', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'RBAC_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'RBAC_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         try {
@@ -572,36 +573,36 @@ export function createAdminRoute(logger) {
                 permissionId: p.name || p.permissionId,
                 roleData: p.roleData || {},
             }));
-            const group = updateGroup(groupId, name, permissions);
-            recordAudit(user.userId, user.username, 'UPDATE_GROUP', 'rbac', groupId, JSON.stringify({ name, permCount: permissions.length }));
+            const group = await updateGroup(groupId, name, permissions);
+            await recordAudit(user.userId, user.username, 'UPDATE_GROUP', 'rbac', groupId, JSON.stringify({ name, permCount: permissions.length }));
             return c.json({ success: true, group });
         }
         catch (err) {
             return c.json({ error: err.message || 'Internal error' }, 400);
         }
     });
-    app.delete('/api/admin/rbac/groups/:id', (c) => {
-        const user = requireAuth(c);
+    app.delete('/api/admin/rbac/groups/:id', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'RBAC_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'RBAC_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         try {
             const groupId = c.req.param('id');
-            deleteGroup(groupId);
-            recordAudit(user.userId, user.username, 'DELETE_GROUP', 'rbac', groupId);
+            await deleteGroup(groupId);
+            await recordAudit(user.userId, user.username, 'DELETE_GROUP', 'rbac', groupId);
             return c.json({ success: true });
         }
         catch (err) {
             return c.json({ error: err.message }, 400);
         }
     });
-    app.get('/api/admin/rbac/permissions', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/rbac/permissions', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'RBAC_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'RBAC_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         return c.json({
@@ -624,11 +625,11 @@ export function createAdminRoute(logger) {
     };
     // In-memory tool toggle state
     const toolToggles = {};
-    app.get('/api/admin/mcp/servers', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/mcp/servers', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'MCP_ACCESS');
+        const permCheck = await requirePermission(c, user.userId, 'MCP_ACCESS');
         if (permCheck instanceof Response)
             return permCheck;
         const cfg = loadConfig();
@@ -656,11 +657,11 @@ export function createAdminRoute(logger) {
         }
         return c.json({ servers });
     });
-    app.post('/api/admin/mcp/servers/:id/restart', (c) => {
-        const user = requireAuth(c);
+    app.post('/api/admin/mcp/servers/:id/restart', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'MCP_ACCESS');
+        const permCheck = await requirePermission(c, user.userId, 'MCP_ACCESS');
         if (permCheck instanceof Response)
             return permCheck;
         const serverId = c.req.param('id');
@@ -670,15 +671,15 @@ export function createAdminRoute(logger) {
             return c.json({ error: 'Forbidden: server not in allowedServers' }, 403);
         }
         addMcpLog(serverId, 'INFO', `Server restart requested by ${user.username}`);
-        recordAudit(user.userId, user.username, 'RESTART_SERVER', 'mcp', serverId);
+        await recordAudit(user.userId, user.username, 'RESTART_SERVER', 'mcp', serverId);
         return c.json({ success: true, message: 'Restart signal sent' });
     });
     // POST /api/admin/mcp/servers/:id/tools/:toolName/toggle
     app.post('/api/admin/mcp/servers/:id/tools/:toolName/toggle', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'MCP_MANAGE');
+        const permCheck = await requirePermission(c, user.userId, 'MCP_MANAGE');
         if (permCheck instanceof Response)
             return permCheck;
         const serverId = c.req.param('id');
@@ -693,15 +694,15 @@ export function createAdminRoute(logger) {
             toolToggles[serverId] = {};
         toolToggles[serverId][toolName] = enabled !== false;
         addMcpLog(serverId, 'INFO', `Tool "${toolName}" ${enabled !== false ? 'enabled' : 'disabled'} by ${user.username}`);
-        recordAudit(user.userId, user.username, 'TOGGLE_TOOL', 'mcp', `${serverId}/${toolName}`, JSON.stringify({ enabled }));
+        await recordAudit(user.userId, user.username, 'TOGGLE_TOOL', 'mcp', `${serverId}/${toolName}`, JSON.stringify({ enabled }));
         return c.json({ success: true, serverId, toolName, enabled: enabled !== false });
     });
     // GET /api/admin/mcp/servers/:id/logs
-    app.get('/api/admin/mcp/servers/:id/logs', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/mcp/servers/:id/logs', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'MCP_ACCESS');
+        const permCheck = await requirePermission(c, user.userId, 'MCP_ACCESS');
         if (permCheck instanceof Response)
             return permCheck;
         const serverId = c.req.param('id');
@@ -754,23 +755,23 @@ export function createAdminRoute(logger) {
         }
         return base;
     };
-    app.get('/api/admin/config', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/config', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'CONFIG_EDIT');
+        const permCheck = await requirePermission(c, user.userId, 'CONFIG_EDIT');
         if (permCheck instanceof Response)
             return permCheck;
         const config = getEffectiveConfig();
-        const history = getConfigChanges(10);
+        const history = await getConfigChanges(10);
         const restartRequired = RESTART_REQUIRED_KEYS;
         return c.json({ config, history, restartRequired });
     });
     app.patch('/api/admin/config/:section/:key', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'CONFIG_EDIT');
+        const permCheck = await requirePermission(c, user.userId, 'CONFIG_EDIT');
         if (permCheck instanceof Response)
             return permCheck;
         // Enforce readOnly roleData — if user has CONFIG_EDIT with readOnly=true, block writes
@@ -798,26 +799,26 @@ export function createAdminRoute(logger) {
             configOverrides[section] = {};
         configOverrides[section][key] = value;
         // Record change
-        recordConfigChange(section, key, oldValue, newValue, user.username, requiresRestart);
-        recordAudit(user.userId, user.username, 'CONFIG_CHANGE', 'config', `${section}.${key}`, JSON.stringify({ oldValue, newValue, requiresRestart }));
+        await recordConfigChange(section, key, oldValue, newValue, user.username, requiresRestart);
+        await recordAudit(user.userId, user.username, 'CONFIG_CHANGE', 'config', `${section}.${key}`, JSON.stringify({ oldValue, newValue, requiresRestart }));
         return c.json({ success: true, requiresRestart, section, key, value });
     });
-    app.get('/api/admin/config/history', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/config/history', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'CONFIG_EDIT');
+        const permCheck = await requirePermission(c, user.userId, 'CONFIG_EDIT');
         if (permCheck instanceof Response)
             return permCheck;
-        const history = getConfigChanges(20);
+        const history = await getConfigChanges(20);
         return c.json({ history });
     });
     // STORY 8: Config reset to defaults
-    app.post('/api/admin/config/:section/reset', (c) => {
-        const user = requireAuth(c);
+    app.post('/api/admin/config/:section/reset', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'CONFIG_EDIT');
+        const permCheck = await requirePermission(c, user.userId, 'CONFIG_EDIT');
         if (permCheck instanceof Response)
             return permCheck;
         // Enforce readOnly roleData — reset IS a write action
@@ -832,16 +833,16 @@ export function createAdminRoute(logger) {
         // Clear all overrides for this section
         const overridesExisted = !!configOverrides[section] && Object.keys(configOverrides[section]).length > 0;
         delete configOverrides[section];
-        recordAudit(user.userId, user.username, 'CONFIG_RESET', 'config', section, JSON.stringify({ section, overridesCleared: overridesExisted }));
+        await recordAudit(user.userId, user.username, 'CONFIG_RESET', 'config', section, JSON.stringify({ section, overridesCleared: overridesExisted }));
         // Return the section with defaults applied
         const freshConfig = getEffectiveConfig();
         return c.json({ success: true, section, config: freshConfig[section] });
     });
-    app.post('/api/admin/config/reset-all', (c) => {
-        const user = requireAuth(c);
+    app.post('/api/admin/config/reset-all', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'CONFIG_EDIT');
+        const permCheck = await requirePermission(c, user.userId, 'CONFIG_EDIT');
         if (permCheck instanceof Response)
             return permCheck;
         // Enforce readOnly roleData — reset-all IS a write action
@@ -853,16 +854,16 @@ export function createAdminRoute(logger) {
         for (const key of Object.keys(configOverrides)) {
             delete configOverrides[key];
         }
-        recordAudit(user.userId, user.username, 'CONFIG_RESET_ALL', 'config', undefined, JSON.stringify({ sectionsCleared: sections }));
+        await recordAudit(user.userId, user.username, 'CONFIG_RESET_ALL', 'config', undefined, JSON.stringify({ sectionsCleared: sections }));
         const freshConfig = getEffectiveConfig();
         return c.json({ success: true, config: freshConfig });
     });
     // ===== Audit =====
-    app.get('/api/admin/audit', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/audit', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'AUDIT_VIEW');
+        const permCheck = await requirePermission(c, user.userId, 'AUDIT_VIEW');
         if (permCheck instanceof Response)
             return permCheck;
         const page = parseInt(c.req.query('page') || '1');
@@ -872,7 +873,7 @@ export function createAdminRoute(logger) {
         const dateTo = c.req.query('dateTo') || undefined;
         // KSA-286: When impersonating, only show the impersonated user's own audit entries
         const userId = user.impersonating ? user.userId : undefined;
-        const result = getAuditLogs({ userId, action, dateFrom, dateTo }, page, pageSize);
+        const result = await getAuditLogs({ userId, action, dateFrom, dateTo }, page, pageSize);
         return c.json({
             entries: result.items,
             total: result.total,
@@ -883,10 +884,10 @@ export function createAdminRoute(logger) {
     });
     // ===== Search (STORY 9 — Real KB-based semantic search + STORY 4 — query tracking) =====
     app.post('/api/admin/search', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'SEARCH_EXPLORE');
+        const permCheck = await requirePermission(c, user.userId, 'SEARCH_EXPLORE');
         if (permCheck instanceof Response)
             return permCheck;
         // Enforce maxResults from roleData
@@ -896,11 +897,11 @@ export function createAdminRoute(logger) {
             return c.json({ results: [] });
         const startTime = Date.now();
         // STORY 9: Try real KB search first
-        const realResults = searchKbEntries(query);
+        const realResults = await searchKbEntries(query);
         if (realResults.items.length > 0) {
             const responseTimeMs = Date.now() - startTime;
             // STORY 4: Record query to DB — KSA-286: record with impersonated userId
-            recordQueryLog(query, responseTimeMs, realResults.items.length, user.userId);
+            await recordQueryLog(query, responseTimeMs, realResults.items.length, user.userId);
             const resultLimit = (typeof maxResults === 'number' && maxResults > 0) ? Math.min(maxResults, 20) : 20;
             const results = realResults.items.slice(0, resultLimit).map((item) => ({
                 id: item.id || item.entry_id || 'unknown',
@@ -935,7 +936,7 @@ export function createAdminRoute(logger) {
             finalResults = finalResults.slice(0, maxResults);
         }
         // STORY 4: Record query to DB even for mock fallback — KSA-286: record with impersonated userId
-        recordQueryLog(query, responseTimeMs, finalResults.length, user.userId);
+        await recordQueryLog(query, responseTimeMs, finalResults.length, user.userId);
         return c.json({
             results: finalResults,
             debug: debug ? { queryTokens: query.split(/\s+/), totalCandidates: 42, searchTimeMs: responseTimeMs } : undefined,
@@ -946,18 +947,18 @@ export function createAdminRoute(logger) {
     const kbLinks = {};
     const kbTags = {};
     const promotionQueue = [];
-    app.get('/api/admin/kb/entries', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/entries', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_READ');
+        const permCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (permCheck instanceof Response)
             return permCheck;
         const page = parseInt(c.req.query('page') || '1');
         const pageSize = parseInt(c.req.query('pageSize') || '20');
         const sortBy = c.req.query('sortBy') || 'created_at';
         const sortDir = (c.req.query('sortDir') || 'desc');
-        const result = getKbEntries(page, pageSize, sortBy, sortDir);
+        const result = await getKbEntries(page, pageSize, sortBy, sortDir);
         // Enforce allowedTiers roleData filtering
         const allowedTiers = permCheck.roleData?.allowedTiers;
         let entries = result.items;
@@ -976,15 +977,15 @@ export function createAdminRoute(logger) {
         });
     });
     // STORY 3: KB Entry detail by ID (graph node click → detail panel)
-    app.get('/api/admin/kb/entries/:id', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/entries/:id', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_READ');
+        const permCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (permCheck instanceof Response)
             return permCheck;
         const entryId = c.req.param('id');
-        const entry = getKbEntryById(entryId);
+        const entry = await getKbEntryById(entryId);
         if (!entry)
             return c.json({ error: 'Entry not found' }, 404);
         // Enforce allowedTiers — check entry tier against user's allowed tiers
@@ -1013,17 +1014,17 @@ export function createAdminRoute(logger) {
         });
     });
     // KB Graph — tenant filtered by KB_READ.allowedTiers + GRAPH_VIEW.maxNodes
-    app.get('/api/admin/kb/graph', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/graph', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const kbPermCheck = requirePermission(c, user.userId, 'KB_READ');
+        const kbPermCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (kbPermCheck instanceof Response)
             return kbPermCheck;
         const allowedTiers = kbPermCheck.roleData?.allowedTiers;
-        const graphPermCheck = checkPermission(user.userId, 'GRAPH_VIEW');
+        const graphPermCheck = await checkPermission(user.userId, 'GRAPH_VIEW');
         const maxNodes = graphPermCheck.roleData?.maxNodes || 500;
-        const result = getKbEntries(1, 500, 'created_at', 'desc');
+        const result = await getKbEntries(1, 500, 'created_at', 'desc');
         let nodes = [];
         let edges = [];
         if (result.items.length > 0) {
@@ -1074,14 +1075,14 @@ export function createAdminRoute(logger) {
             const nodeIds = new Set(nodes.map(n => n.id));
             edges = [{ source: 'n0', target: 'n1', weight: 0.9 }, { source: 'n0', target: 'n5', weight: 0.8 }, { source: 'n1', target: 'n6', weight: 0.7 }, { source: 'n2', target: 'n10', weight: 0.85 }, { source: 'n3', target: 'n9', weight: 0.6 }, { source: 'n4', target: 'n5', weight: 0.75 }, { source: 'n5', target: 'n6', weight: 0.9 }, { source: 'n6', target: 'n7', weight: 0.8 }, { source: 'n7', target: 'n8', weight: 0.7 }, { source: 'n8', target: 'n0', weight: 0.5 }, { source: 'n9', target: 'n13', weight: 0.85 }, { source: 'n10', target: 'n11', weight: 0.6 }, { source: 'n11', target: 'n12', weight: 0.7 }, { source: 'n12', target: 'n13', weight: 0.55 }, { source: 'n13', target: 'n14', weight: 0.8 }, { source: 'n14', target: 'n0', weight: 0.65 }].filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
         }
-        return c.json({ nodes, edges, stats: { totalNodes: nodes.length, totalEdges: edges.length, maxNodes, totalEntries: getKbEntryCount() } });
+        return c.json({ nodes, edges, stats: { totalNodes: nodes.length, totalEdges: edges.length, maxNodes, totalEntries: await getKbEntryCount() } });
     });
     // KB Graph Cluster Children — progressive loading for LOD
-    app.get('/api/admin/kb/graph/cluster/:clusterId', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/graph/cluster/:clusterId', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const kbPermCheck = requirePermission(c, user.userId, 'KB_READ');
+        const kbPermCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (kbPermCheck instanceof Response)
             return kbPermCheck;
         const clusterId = c.req.param('clusterId');
@@ -1092,7 +1093,7 @@ export function createAdminRoute(logger) {
         const clusterIndex = parseInt(match[1], 10);
         const pageSize = 30;
         const offset = clusterIndex * pageSize;
-        const result = getKbEntries(1, 5000, 'created_at', 'desc');
+        const result = await getKbEntries(1, 5000, 'created_at', 'desc');
         const items = result.items.slice(offset, offset + pageSize);
         const nodes = items.map((e, i) => ({
             id: e.id || e.entry_id || `child-${offset + i}`,
@@ -1112,11 +1113,11 @@ export function createAdminRoute(logger) {
         return c.json({ clusterId, nodes, edges });
     });
     // KB Graph Positions — returns ALL node positions (optimized, no edges) for Three.js renderer
-    app.get('/api/admin/kb/graph/positions', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/graph/positions', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const kbPermCheck = requirePermission(c, user.userId, 'KB_READ');
+        const kbPermCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (kbPermCheck instanceof Response)
             return kbPermCheck;
         const allowedTiers = kbPermCheck.roleData?.allowedTiers;
@@ -1136,7 +1137,7 @@ export function createAdminRoute(logger) {
             }
         }
         // Fallback: generate positions from KB entries
-        const result = getKbEntries(1, 100000, 'created_at', 'desc');
+        const result = await getKbEntries(1, 100000, 'created_at', 'desc');
         const items = result.items;
         const n = items.length;
         const golden = (1 + Math.sqrt(5)) / 2;
@@ -1166,10 +1167,10 @@ export function createAdminRoute(logger) {
     });
     // KB Graph Full Sync — rebuilds graph from all sources (documents + code symbols)
     app.post('/api/admin/kb/graph/sync', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'GRAPH_VIEW');
+        const permCheck = await requirePermission(c, user.userId, 'GRAPH_VIEW');
         if (permCheck instanceof Response)
             return permCheck;
         const graphService = globalThis.__sqliteGraphService;
@@ -1181,8 +1182,10 @@ export function createAdminRoute(logger) {
         setImmediate(async () => {
             try {
                 // Wipe old data first
-                const db = (await import('../../admin/admin-db.js')).getAdminDb();
-                db.exec('DELETE FROM graph_nodes; DELETE FROM graph_edges;');
+                const { getPool: _gp } = await import('../../engine/db/pg-pool.js');
+                const _pool = _gp();
+                await _pool.query('DELETE FROM graph_nodes');
+                await _pool.query('DELETE FROM graph_edges');
                 await graphService.fullSync();
             }
             catch (err) {
@@ -1194,10 +1197,10 @@ export function createAdminRoute(logger) {
     // KB Graph Spatial Query — Neo4j-powered progressive loading based on camera position
     // Falls back to SQLite if Neo4j is unavailable
     app.get('/api/admin/kb/graph/spatial', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const kbPermCheck = requirePermission(c, user.userId, 'KB_READ');
+        const kbPermCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (kbPermCheck instanceof Response)
             return kbPermCheck;
         const camX = parseFloat(c.req.query('x') || '0');
@@ -1216,10 +1219,10 @@ export function createAdminRoute(logger) {
             }
         }
         // Fallback: SQLite-based spatial approximation
-        const graphPermCheck = checkPermission(user.userId, 'GRAPH_VIEW');
+        const graphPermCheck = await checkPermission(user.userId, 'GRAPH_VIEW');
         const maxNodes = graphPermCheck.roleData?.maxNodes || 500;
         const allowedTiers = kbPermCheck.roleData?.allowedTiers;
-        const result = getKbEntries(1, maxNodes, 'created_at', 'desc');
+        const result = await getKbEntries(1, maxNodes, 'created_at', 'desc');
         let items = result.items;
         if (Array.isArray(allowedTiers)) {
             items = items.filter((e) => allowedTiers.includes(e.tier || e.scope || 'SHARED'));
@@ -1285,22 +1288,22 @@ export function createAdminRoute(logger) {
         const level = zoom > 500 ? 'macro' : zoom > 200 ? 'mid' : 'micro';
         return c.json({
             nodes: filteredNodes, edges,
-            stats: { totalNodes: filteredNodes.length, totalEdges: edges.length, queryTimeMs: 0, level, source: 'sqlite-fallback', totalEntries: getKbEntryCount() }
+            stats: { totalNodes: filteredNodes.length, totalEdges: edges.length, queryTimeMs: 0, level, source: 'sqlite-fallback', totalEntries: await getKbEntryCount() }
         });
     });
     // KB Graph Sync — populate graph tables from KB entries
-    app.post('/api/admin/kb/graph/sync', (c) => {
-        const user = requireAuth(c);
+    app.post('/api/admin/kb/graph/sync', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_WRITE');
+        const permCheck = await requirePermission(c, user.userId, 'KB_WRITE');
         if (permCheck instanceof Response)
             return permCheck;
         const graphService = globalThis.__sqliteGraphService;
         if (!graphService || !graphService.ready) {
             return c.json({ error: 'Graph service not ready' }, 503);
         }
-        const result = getKbEntries(1, 100000, 'created_at', 'desc');
+        const result = await getKbEntries(1, 100000, 'created_at', 'desc');
         if (result.items.length === 0) {
             return c.json({ error: 'No KB entries to sync', nodesCreated: 0, edgesCreated: 0 });
         }
@@ -1308,19 +1311,19 @@ export function createAdminRoute(logger) {
         return c.json({ ...syncResult, totalEntries: result.total });
     });
     // Analytics (STORY 4 — Real query tracking + real embedding space) — tenant filtered
-    app.get('/api/admin/analytics', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/analytics', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const kbPermCheck = requirePermission(c, user.userId, 'KB_READ');
+        const kbPermCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (kbPermCheck instanceof Response)
             return kbPermCheck;
         const allowedTiers = kbPermCheck.roleData?.allowedTiers;
         // KSA-286: When impersonating, scope query stats to that user's queries only
         const queryUserId = user.impersonating ? user.userId : undefined;
         // STORY 4: Real query tracking data
-        const queryStats = getQueryLogStats(queryUserId);
-        const realUsageData = getQueryLogs(14, queryUserId);
+        const queryStats = await getQueryLogStats(queryUserId);
+        const realUsageData = await getQueryLogs(14, queryUserId);
         // Fill in missing days with zeros for consistent chart rendering
         const now = Date.now();
         const usageOverTime = [];
@@ -1335,7 +1338,7 @@ export function createAdminRoute(logger) {
             });
         }
         // Quality scores — filter by allowedTiers
-        const allEntries = getKbEntries(1, 10000, 'created_at', 'desc');
+        const allEntries = await getKbEntries(1, 10000, 'created_at', 'desc');
         let filteredEntries = allEntries.items;
         if (Array.isArray(allowedTiers)) {
             filteredEntries = filteredEntries.filter((e) => {
@@ -1351,7 +1354,7 @@ export function createAdminRoute(logger) {
         });
         const qualityScores = filteredEntries.length > 0 ? qualityBuckets : Array.from({ length: 10 }, (_, i) => ({ range: `${i * 10}-${(i + 1) * 10}`, count: Math.floor(Math.random() * 30) + (i > 5 ? 20 : 5) }));
         // STORY 4: Embedding space from real vectors
-        const embeddingData = getKbEmbeddings(100);
+        const embeddingData = await getKbEmbeddings(100);
         let embeddingSpace;
         if (embeddingData.hasRealData && embeddingData.items.length > 0) {
             embeddingSpace = embeddingData.items.map((item, i) => ({
@@ -1389,10 +1392,10 @@ export function createAdminRoute(logger) {
     });
     // KB Entry Linking
     app.post('/api/admin/kb/entries/:id/link', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_WRITE');
+        const permCheck = await requirePermission(c, user.userId, 'KB_WRITE');
         if (permCheck instanceof Response)
             return permCheck;
         const entryId = c.req.param('id');
@@ -1402,24 +1405,24 @@ export function createAdminRoute(logger) {
         if (!kbLinks[entryId])
             kbLinks[entryId] = [];
         kbLinks[entryId].push({ targetId, linkType: linkType || 'related', createdAt: new Date().toISOString() });
-        recordAudit(user.userId, user.username, 'LINK_ENTRY', 'kb', entryId, JSON.stringify({ targetId, linkType }));
+        await recordAudit(user.userId, user.username, 'LINK_ENTRY', 'kb', entryId, JSON.stringify({ targetId, linkType }));
         return c.json({ success: true, links: kbLinks[entryId] });
     });
-    app.get('/api/admin/kb/entries/:id/links', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/entries/:id/links', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_READ');
+        const permCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (permCheck instanceof Response)
             return permCheck;
         return c.json({ entryId: c.req.param('id'), links: kbLinks[c.req.param('id')] || [] });
     });
     // KB Entry Tagging
     app.post('/api/admin/kb/entries/:id/tags', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_WRITE');
+        const permCheck = await requirePermission(c, user.userId, 'KB_WRITE');
         if (permCheck instanceof Response)
             return permCheck;
         const entryId = c.req.param('id');
@@ -1427,21 +1430,21 @@ export function createAdminRoute(logger) {
         if (!Array.isArray(tags))
             return c.json({ error: 'tags must be an array' }, 400);
         kbTags[entryId] = tags;
-        updateKbEntryTags(entryId, tags);
-        recordAudit(user.userId, user.username, 'TAG_ENTRY', 'kb', entryId, JSON.stringify({ tags }));
+        await updateKbEntryTags(entryId, tags);
+        await recordAudit(user.userId, user.username, 'TAG_ENTRY', 'kb', entryId, JSON.stringify({ tags }));
         return c.json({ success: true, entryId, tags: kbTags[entryId] });
     });
-    app.get('/api/admin/kb/entries/:id/tags', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/entries/:id/tags', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_READ');
+        const permCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (permCheck instanceof Response)
             return permCheck;
         const entryId = c.req.param('id');
         let tags = kbTags[entryId] || [];
         if (tags.length === 0) {
-            const entry = getKbEntryById(entryId);
+            const entry = await getKbEntryById(entryId);
             if (entry && entry.tags) {
                 tags = entry.tags.split(',').map((t) => t.trim()).filter((t) => t.length > 0);
                 kbTags[entryId] = tags;
@@ -1450,11 +1453,11 @@ export function createAdminRoute(logger) {
         return c.json({ entryId, tags });
     });
     // KB Promotion Queue
-    app.get('/api/admin/kb/promotions', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/promotions', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_PROMOTE');
+        const permCheck = await requirePermission(c, user.userId, 'KB_PROMOTE');
         if (permCheck instanceof Response)
             return permCheck;
         const status = c.req.query('status') || undefined;
@@ -1464,17 +1467,17 @@ export function createAdminRoute(logger) {
         return c.json({ promotions: filtered, total: filtered.length });
     });
     app.post('/api/admin/kb/promotions', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_PROMOTE');
+        const permCheck = await requirePermission(c, user.userId, 'KB_PROMOTE');
         if (permCheck instanceof Response)
             return permCheck;
         const { entryId, fromTier, toTier, reason } = await c.req.json();
         if (!entryId || !toTier)
             return c.json({ error: 'entryId and toTier required' }, 400);
         // STORY 11: Check 7-day cooldown after rejection
-        const cooldownStatus = checkPromotionCooldown(entryId);
+        const cooldownStatus = await checkPromotionCooldown(entryId);
         if (cooldownStatus.onCooldown) {
             return c.json({
                 error: 'Entry is on promotion cooldown after a recent rejection',
@@ -1483,14 +1486,14 @@ export function createAdminRoute(logger) {
         }
         const promotion = { id: 'promo-' + Date.now().toString(36), entryId, fromTier: fromTier || 'USER', toTier, reason: reason || '', requestedBy: user.username, requestedAt: new Date().toISOString(), status: 'pending' };
         promotionQueue.push(promotion);
-        recordAudit(user.userId, user.username, 'REQUEST_PROMOTION', 'kb', entryId, JSON.stringify({ fromTier, toTier }));
+        await recordAudit(user.userId, user.username, 'REQUEST_PROMOTION', 'kb', entryId, JSON.stringify({ fromTier, toTier }));
         return c.json({ success: true, promotion }, 201);
     });
     app.post('/api/admin/kb/promotions/:id/review', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_PROMOTE');
+        const permCheck = await requirePermission(c, user.userId, 'KB_PROMOTE');
         if (permCheck instanceof Response)
             return permCheck;
         const promoId = c.req.param('id');
@@ -1505,20 +1508,20 @@ export function createAdminRoute(logger) {
         promo.reviewedAt = new Date().toISOString();
         // STORY 11: Set 7-day cooldown on rejection
         if (action === 'reject') {
-            setPromotionCooldown(promo.entryId, user.username);
+            await setPromotionCooldown(promo.entryId, user.username);
         }
-        recordAudit(user.userId, user.username, action === 'approve' ? 'APPROVE_PROMOTION' : 'REJECT_PROMOTION', 'kb', promo.entryId);
+        await recordAudit(user.userId, user.username, action === 'approve' ? 'APPROVE_PROMOTION' : 'REJECT_PROMOTION', 'kb', promo.entryId);
         return c.json({ success: true, promotion: promo });
     });
     // KB Import/Export
-    app.get('/api/admin/kb/export', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/export', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_IMPORT_EXPORT');
+        const permCheck = await requirePermission(c, user.userId, 'KB_IMPORT_EXPORT');
         if (permCheck instanceof Response)
             return permCheck;
-        const result = getKbEntries(1, 10000, 'created_at', 'desc');
+        const result = await getKbEntries(1, 10000, 'created_at', 'desc');
         // Enforce allowedTiers — filter exported entries by user's allowed tiers
         const allowedTiers = permCheck.roleData?.allowedTiers;
         let entries = result.items;
@@ -1528,14 +1531,14 @@ export function createAdminRoute(logger) {
                 return allowedTiers.includes(entryTier);
             });
         }
-        recordAudit(user.userId, user.username, 'KB_EXPORT', 'kb', undefined, JSON.stringify({ count: entries.length }));
+        await recordAudit(user.userId, user.username, 'KB_EXPORT', 'kb', undefined, JSON.stringify({ count: entries.length }));
         return c.json({ entries, exportedAt: new Date().toISOString(), count: entries.length });
     });
     app.post('/api/admin/kb/import', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_IMPORT_EXPORT');
+        const permCheck = await requirePermission(c, user.userId, 'KB_IMPORT_EXPORT');
         if (permCheck instanceof Response)
             return permCheck;
         try {
@@ -1548,7 +1551,7 @@ export function createAdminRoute(logger) {
                 return c.json({ error: 'conflictMode must be skip, overwrite, or merge' }, 400);
             }
             // Check for conflicts (entries with same ID that already exist)
-            const existingEntries = getKbEntries(1, 10000, 'created_at', 'desc');
+            const existingEntries = await getKbEntries(1, 10000, 'created_at', 'desc');
             const existingIds = new Set(existingEntries.items.map((e) => e.id || e.entry_id));
             const conflicts = [];
             const newEntries = [];
@@ -1584,7 +1587,7 @@ export function createAdminRoute(logger) {
                         break;
                 }
             }
-            recordAudit(user.userId, user.username, 'KB_IMPORT', 'kb', undefined, JSON.stringify({ count: entries.length, conflictMode: mode, imported, skipped, overwritten, merged }));
+            await recordAudit(user.userId, user.username, 'KB_IMPORT', 'kb', undefined, JSON.stringify({ count: entries.length, conflictMode: mode, imported, skipped, overwritten, merged }));
             return c.json({
                 success: true,
                 imported,
@@ -1604,11 +1607,11 @@ export function createAdminRoute(logger) {
         }
     });
     // ===== KB Quality Page Endpoint =====
-    app.get('/api/admin/kb/quality', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/quality', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_READ');
+        const permCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (permCheck instanceof Response)
             return permCheck;
         const allowedTiers = permCheck.roleData?.allowedTiers;
@@ -1617,7 +1620,7 @@ export function createAdminRoute(logger) {
         const tierFilter = c.req.query('tier') || undefined;
         const sortBy = c.req.query('sortBy') || 'quality_score';
         const sortDir = (c.req.query('sortDir') || 'desc');
-        const result = getKbEntries(1, 10000, 'created_at', 'desc');
+        const result = await getKbEntries(1, 10000, 'created_at', 'desc');
         let entries = result.items.map((e) => ({
             id: e.id || e.entry_id,
             source: e.source || e.title || 'Untitled',
@@ -1664,14 +1667,14 @@ export function createAdminRoute(logger) {
         });
     });
     // ===== KB Tags Endpoints =====
-    app.get('/api/admin/kb/tags', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/tags', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_READ');
+        const permCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (permCheck instanceof Response)
             return permCheck;
-        const tagCounts = getAllKbTags();
+        const tagCounts = await getAllKbTags();
         // Include registered tags with 0 count
         if (kbTags['__tag_registry__']) {
             for (const tag of kbTags['__tag_registry__']) {
@@ -1688,10 +1691,10 @@ export function createAdminRoute(logger) {
         return c.json({ tags: tagList, total: tagList.length });
     });
     app.post('/api/admin/kb/tags', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_WRITE');
+        const permCheck = await requirePermission(c, user.userId, 'KB_WRITE');
         if (permCheck instanceof Response)
             return permCheck;
         const { name } = await c.req.json();
@@ -1704,14 +1707,14 @@ export function createAdminRoute(logger) {
             return c.json({ error: 'Tag already exists' }, 409);
         }
         kbTags['__tag_registry__'].push(name.trim());
-        recordAudit(user.userId, user.username, 'CREATE_TAG', 'kb', undefined, JSON.stringify({ tag: name.trim() }));
+        await recordAudit(user.userId, user.username, 'CREATE_TAG', 'kb', undefined, JSON.stringify({ tag: name.trim() }));
         return c.json({ success: true, tag: { name: name.trim(), entryCount: 0 } }, 201);
     });
     app.put('/api/admin/kb/tags/:name', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_WRITE');
+        const permCheck = await requirePermission(c, user.userId, 'KB_WRITE');
         if (permCheck instanceof Response)
             return permCheck;
         const oldName = decodeURIComponent(c.req.param('name'));
@@ -1727,16 +1730,16 @@ export function createAdminRoute(logger) {
                 renamed++;
             }
         }
-        const dbRenamed = renameKbTag(oldName, newName.trim());
+        const dbRenamed = await renameKbTag(oldName, newName.trim());
         const totalRenamed = renamed + dbRenamed;
-        recordAudit(user.userId, user.username, 'RENAME_TAG', 'kb', undefined, JSON.stringify({ oldName, newName: newName.trim(), entriesAffected: totalRenamed }));
+        await recordAudit(user.userId, user.username, 'RENAME_TAG', 'kb', undefined, JSON.stringify({ oldName, newName: newName.trim(), entriesAffected: totalRenamed }));
         return c.json({ success: true, oldName, newName: newName.trim(), entriesAffected: totalRenamed });
     });
-    app.delete('/api/admin/kb/tags/:name', (c) => {
-        const user = requireAuth(c);
+    app.delete('/api/admin/kb/tags/:name', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_WRITE');
+        const permCheck = await requirePermission(c, user.userId, 'KB_WRITE');
         if (permCheck instanceof Response)
             return permCheck;
         const tagName = decodeURIComponent(c.req.param('name'));
@@ -1748,16 +1751,16 @@ export function createAdminRoute(logger) {
                 removed++;
             }
         }
-        const dbRemoved = deleteKbTag(tagName);
+        const dbRemoved = await deleteKbTag(tagName);
         const totalRemoved = removed + dbRemoved;
-        recordAudit(user.userId, user.username, 'DELETE_TAG', 'kb', undefined, JSON.stringify({ tag: tagName, entriesAffected: totalRemoved }));
+        await recordAudit(user.userId, user.username, 'DELETE_TAG', 'kb', undefined, JSON.stringify({ tag: tagName, entriesAffected: totalRemoved }));
         return c.json({ success: true, tag: tagName, entriesAffected: totalRemoved });
     });
     app.post('/api/admin/kb/tags/merge', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_WRITE');
+        const permCheck = await requirePermission(c, user.userId, 'KB_WRITE');
         if (permCheck instanceof Response)
             return permCheck;
         const { sourceTag, targetTag } = await c.req.json();
@@ -1778,16 +1781,16 @@ export function createAdminRoute(logger) {
                 merged++;
             }
         }
-        const dbMerged = mergeKbTags(sourceTag, targetTag);
+        const dbMerged = await mergeKbTags(sourceTag, targetTag);
         const totalMerged = merged + dbMerged;
-        recordAudit(user.userId, user.username, 'MERGE_TAGS', 'kb', undefined, JSON.stringify({ sourceTag, targetTag, entriesAffected: totalMerged }));
+        await recordAudit(user.userId, user.username, 'MERGE_TAGS', 'kb', undefined, JSON.stringify({ sourceTag, targetTag, entriesAffected: totalMerged }));
         return c.json({ success: true, sourceTag, targetTag, entriesAffected: totalMerged });
     });
-    app.get('/api/admin/kb/tags/:name/entries', (c) => {
-        const user = requireAuth(c);
+    app.get('/api/admin/kb/tags/:name/entries', async (c) => {
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
-        const permCheck = requirePermission(c, user.userId, 'KB_READ');
+        const permCheck = await requirePermission(c, user.userId, 'KB_READ');
         if (permCheck instanceof Response)
             return permCheck;
         const allowedTiers = permCheck.roleData?.allowedTiers;
@@ -1796,8 +1799,8 @@ export function createAdminRoute(logger) {
         const memEntryIds = Object.entries(kbTags)
             .filter(([id, tags]) => id !== '__tag_registry__' && tags.includes(tagName))
             .map(([entryId]) => entryId);
-        const memEntries = memEntryIds.map(id => {
-            const entry = getKbEntryById(id);
+        const memEntries = memEntryIds.map(async (id) => {
+            const entry = await getKbEntryById(id);
             if (!entry)
                 return null;
             return {
@@ -1809,7 +1812,7 @@ export function createAdminRoute(logger) {
             };
         }).filter(Boolean);
         // DB entries
-        const dbRows = getKbEntriesByTag(tagName);
+        const dbRows = await getKbEntriesByTag(tagName);
         const dbEntries = dbRows.map((entry) => ({
             id: entry.id || entry.entry_id,
             source: entry.source || entry.title || 'Untitled',
@@ -1833,24 +1836,23 @@ export function createAdminRoute(logger) {
     });
     // ===== Profile Update =====
     app.post('/api/admin/profile', async (c) => {
-        const user = requireAuth(c);
+        const user = await requireAuth(c);
         if (user instanceof Response)
             return user;
         const { email } = await c.req.json();
         if (email !== undefined) {
-            const d = getAdminDb();
-            d.prepare('UPDATE users SET email = ? WHERE user_id = ?').run(email, user.userId);
-            recordAudit(user.userId, user.username, 'UPDATE_PROFILE', 'users', user.userId, JSON.stringify({ email }));
+            await getPool().query('UPDATE users SET email = $1 WHERE user_id = $2', [email, user.userId]);
+            await recordAudit(user.userId, user.username, 'UPDATE_PROFILE', 'users', user.userId, JSON.stringify({ email }));
         }
-        const dbUser = getUserById(user.userId);
+        const dbUser = await getUserById(user.userId);
         return c.json({ success: true, user: { userId: dbUser?.userId, username: dbUser?.username, email: dbUser?.email } });
     });
     // ===== SSE Real-Time Updates (BR-37) =====
     // Dashboard auto-push: sends server stats every 30 seconds to connected clients.
     // BRD states "auto-refreshes every 30 seconds" — SSE provides server-push.
     const sseClients = new Set();
-    app.get('/api/admin/sse', (c) => {
-        const user = authenticate(c);
+    app.get('/api/admin/sse', async (c) => {
+        const user = await authenticate(c);
         if (!user)
             return c.json({ error: 'Unauthorized' }, 401);
         const { readable, writable } = new TransformStream();
@@ -1860,12 +1862,11 @@ export function createAdminRoute(logger) {
         // Send initial connection event
         writer.write(encoder.encode(`event: connected\ndata: ${JSON.stringify({ userId: user.userId, timestamp: new Date().toISOString() })}\n\n`));
         // Build stats payload
-        const buildStats = () => {
+        const buildStats = async () => {
             const uptimeMs = Date.now() - SERVER_START_TIME;
             const mem = process.memoryUsage();
-            const d = getAdminDb();
-            const userCount = d.prepare('SELECT COUNT(*) as cnt FROM users').get().cnt;
-            const kbCount = getKbEntryCount();
+            const userCount = parseInt((await getPool().query('SELECT COUNT(*) as cnt FROM users')).rows[0].cnt);
+            const kbCount = await getKbEntryCount();
             return JSON.stringify({
                 kbEntries: kbCount,
                 users: userCount,
@@ -1875,11 +1876,11 @@ export function createAdminRoute(logger) {
             });
         };
         // Send stats immediately
-        writer.write(encoder.encode(`event: stats\ndata: ${buildStats()}\n\n`));
+        writer.write(encoder.encode(`event: stats\ndata: ${await buildStats()}\n\n`));
         // Push stats every 30 seconds
-        const interval = setInterval(() => {
+        const interval = setInterval(async () => {
             try {
-                writer.write(encoder.encode(`event: stats\ndata: ${buildStats()}\n\n`));
+                writer.write(encoder.encode(`event: stats\ndata: ${await buildStats()}\n\n`));
             }
             catch {
                 clearInterval(interval);

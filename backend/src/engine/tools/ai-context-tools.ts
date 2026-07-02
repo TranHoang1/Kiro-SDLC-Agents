@@ -72,9 +72,9 @@ export const AI_CONTEXT_TOOL_DEFINITIONS = [
 ];
 
 /** Handle get_ai_context tool call. */
-export function handleGetAIContext(args: Record<string, unknown>, db: Database.Database, workspace: string): string {
+export function handleGetAIContext(args: Record<string, unknown>, db: any, workspace: string): string {
   const resolver = new SymbolResolver(db);
-  const graphRepo = new GraphRepository(db);
+  const graphRepo = new GraphRepository(db as any);
   const callGraph = new CallGraphService(graphRepo, resolver);
   const service = new AIContextService(db, resolver, callGraph, workspace);
 
@@ -91,9 +91,9 @@ export function handleGetAIContext(args: Record<string, unknown>, db: Database.D
 }
 
 /** Handle get_edit_context tool call. */
-export function handleGetEditContext(args: Record<string, unknown>, db: Database.Database, workspace: string): string {
+export function handleGetEditContext(args: Record<string, unknown>, db: any, workspace: string): string {
   const resolver = new SymbolResolver(db);
-  const graphRepo = new GraphRepository(db);
+  const graphRepo = new GraphRepository(db as any);
   const callGraph = new CallGraphService(graphRepo, resolver);
   const testDetector = new TestDetector(db);
   const service = new EditContextService(db, resolver, callGraph, testDetector, workspace);
@@ -115,7 +115,7 @@ export function handleGetEditContext(args: Record<string, unknown>, db: Database
 /** Handle get_curated_context tool call. */
 export function handleGetCuratedContext(
   args: Record<string, unknown>,
-  db: Database.Database,
+  db: any,
   workspace: string,
   dbManager: DatabaseManager
 ): string {

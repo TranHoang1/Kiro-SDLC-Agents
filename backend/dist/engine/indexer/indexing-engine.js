@@ -15,7 +15,7 @@ import { FileWatcher } from './file-watcher.js';
 import { TreeSitterIndexer } from '../parsers/tree-sitter-indexer.js';
 import { GrammarRegistry, loadGrammarConfig } from '../parsers/grammar-registry.js';
 import { GraphRepository } from '../database/graph-repository.js';
-import { runGraphMigrations, isGraphSchemaReady } from '../database/migrator.js';
+import { getPool } from '../db/pg-pool.js';
 export class IndexingEngine {
     db;
     config;
@@ -27,18 +27,15 @@ export class IndexingEngine {
     graphRepo = null;
     treeSitterReady = false;
     constructor(dbManager, config) {
-        this.db = dbManager.getDb();
+        this.db = dbManager.getSqliteDb(config.dbPath);
         this.config = config;
         this.initTreeSitter();
     }
     /** Initialize tree-sitter infrastructure (grammar registry + indexer). */
     initTreeSitter() {
         try {
-            // Ensure graph schema is ready (relationships table)
-            if (!isGraphSchemaReady(this.db)) {
-                runGraphMigrations(this.db);
-            }
-            this.graphRepo = new GraphRepository(this.db);
+            // Graph schema is managed by PostgreSQL migrations — skip sync check
+            this.graphRepo = new GraphRepository(getPool());
             // Load grammar config — check dist/ first, then src/ (dev mode)
             const distConfigPath = path.resolve(__dirname, '../parsers/grammar-config.json');
             const srcConfigPath = path.resolve(__dirname, '../../src/parsers/grammar-config.json');
@@ -83,7 +80,7 @@ export class IndexingEngine {
             this.detectAndStorePatterns(new Map());
             // Resolve cross-file relationships after full index
             if (this.graphRepo) {
-                const resolved = this.graphRepo.resolveTargets(5000);
+                const resolved = await this.graphRepo.resolveTargets(5000);
                 if (resolved > 0) {
                     console.error(`[indexer] Resolved ${resolved} cross-file symbol references`);
                 }
