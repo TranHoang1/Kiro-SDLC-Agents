@@ -134,6 +134,16 @@ export function createAdminRoute(logger: Logger): Hono {
     return c.text('Not found', 404);
   });
 
+  app.get('/admin/mcp-credentials', async (c) => {
+    const credPath = path.resolve(__dirname, '../../admin-ui/dist/mcp-credentials.html');
+    if (fs.existsSync(credPath)) {
+      return new Response(fs.readFileSync(credPath, 'utf-8'), {
+        headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache' }
+      });
+    }
+    return c.text('Not found', 404);
+  });
+
   app.get('/admin/*', async (c) => {
     if (fs.existsSync(spaPath)) {
       const html = fs.readFileSync(spaPath, 'utf-8');
